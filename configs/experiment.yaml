@@ -1,0 +1,38 @@
+seed: 42
+device: cuda
+
+data:
+  image_size: 224
+  train_fraction: 0.8
+  eval_images: 500
+  activation_batch_size: 16
+  dataloader_workers: 0  # safer on Windows + Google Drive paths
+
+layer_depths:
+  - early
+  - middle
+  - late
+
+sae_architectures:
+  topk:
+    k: 40
+    dictionary_multiplier: 4
+    k_aux_divisor: 2
+  matryoshka:
+    k: 40
+    nested_multipliers: [1, 2, 4]
+    k_aux_divisor: 2
+
+training:
+  steps: 50000
+  batch_size: 1024  # RTX 3070 / 16GB RAM: lower if CUDA OOM during SAE train
+  lr: 3.0e-4
+  weight_decay: 0.0
+  buffer_size: 500000
+  # 0 = one ViT pass to fill buffer, then 50k SAE steps only (~1–2 h). 0.5 caused ~200 refills.
+  buffer_refill_threshold: 0
+  log_every: 100
+
+paths:
+  results_dir: results
+  summary_csv: results/summary_table.csv

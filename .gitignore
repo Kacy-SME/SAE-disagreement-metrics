@@ -1,0 +1,10 @@
+results/
+*.pt
+*.npy
+*.npz
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+hf_cache/
