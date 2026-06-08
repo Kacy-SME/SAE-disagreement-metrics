@@ -34,12 +34,17 @@ def evaluate_sae_on_activations(
     norm_spec: dict,
     device: str,
     batch_size: int = 2048,
+    activations_cls_zero: torch.Tensor | None = None,
 ) -> Dict[str, float]:
     acts = preprocess_activations(activations, norm_spec).to(device)
+    acts_cls_zero = None
+    if activations_cls_zero is not None:
+        acts_cls_zero = preprocess_activations(activations_cls_zero, norm_spec).to(device)
     n = acts.shape[0]
 
     h_with_sae = []
     h_zero_ablate = []
+    h_zero_cls_proxy = []
     h_original = []
     l0_vals = []
     feature_max = None
@@ -62,6 +67,9 @@ def evaluate_sae_on_activations(
         h_with_sae.append(F.mse_loss(recon, batch).item())
         h_zero_ablate.append(F.mse_loss(zero_recon, batch).item())
         h_original.append(F.mse_loss(dense_recon, batch).item())
+        if acts_cls_zero is not None:
+            batch_cls = acts_cls_zero[start : start + batch_size]
+            h_zero_cls_proxy.append(F.mse_loss(batch_cls, batch).item())
         l0_vals.append((encoded_acts > 0).float().sum(dim=-1).mean().item())
 
     h_with = float(np.mean(h_with_sae))
@@ -72,6 +80,21 @@ def evaluate_sae_on_activations(
         (h_zero - h_with) / h_zero if h_zero > 1e-8 else 0.0
     )
 
+    out: Dict[str, float] = {}
+    if h_zero_cls_proxy:
+        h_zero_cls = float(np.mean(h_zero_cls_proxy))
+        lr_cls, lr_cls_valid = compute_loss_recovered(h_with, h_zero_cls, h_orig)
+        out.update(
+            {
+                "H_zero_cls_proxy": h_zero_cls,
+                "loss_recovered_cls_proxy": float(lr_cls),
+                "loss_recovered_cls_proxy_valid": lr_cls_valid,
+                "mse_reduction_vs_cls_proxy": (
+                    (h_zero_cls - h_with) / h_zero_cls if h_zero_cls > 1e-8 else 0.0
+                ),
+            }
+        )
+
     fired = torch.zeros(n_features, dtype=torch.bool)
     for start in tqdm(batch_starts, desc="Eval dead latents", unit="batch", leave=False):
         batch = acts[start : start + batch_size]
@@ -79,16 +102,19 @@ def evaluate_sae_on_activations(
         fired |= (encoded_acts > 0).any(dim=0).cpu()
     dead_fraction = float(1.0 - fired.float().mean().item())
 
-    return {
-        "loss_recovered": float(loss_recovered),
-        "loss_recovered_valid": loss_recovered_valid,
-        "mse_reduction_vs_zero": float(mse_reduction_vs_zero),
-        "mean_L0": float(np.mean(l0_vals)),
-        "dead_fraction": dead_fraction,
-        "H_with_sae": h_with,
-        "H_zero_ablate": h_zero,
-        "H_original": h_orig,
-    }
+    out.update(
+        {
+            "loss_recovered": float(loss_recovered),
+            "loss_recovered_valid": loss_recovered_valid,
+            "mse_reduction_vs_zero": float(mse_reduction_vs_zero),
+            "mean_L0": float(np.mean(l0_vals)),
+            "dead_fraction": dead_fraction,
+            "H_with_sae": h_with,
+            "H_zero_ablate": h_zero,
+            "H_original": h_orig,
+        }
+    )
+    return out
 
 
 def compute_loss_recovered(

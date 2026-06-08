@@ -39,6 +39,25 @@ class ActivationHook:
         return out
 
 
+def _register_cls_zero_pre_hook(
+    blocks: torch.nn.ModuleList,
+    zero_cls_token: bool,
+) -> Optional[torch.utils.hooks.RemovableHandle]:
+    """Zero CLS (first prefix token) before the first transformer block."""
+    if not zero_cls_token or len(blocks) == 0:
+        return None
+
+    def pre_hook(module, args):
+        x = args[0]
+        if not torch.is_tensor(x) or x.ndim != 3:
+            return args
+        x = x.clone()
+        x[:, :1, :] = 0
+        return (x,) + args[1:]
+
+    return blocks[0].register_forward_pre_hook(pre_hook)
+
+
 @torch.no_grad()
 def extract_patch_activations(
     backbone: BackboneAdapter,
@@ -47,6 +66,7 @@ def extract_patch_activations(
     device: str = "cuda",
     max_batches: Optional[int] = None,
     desc: str = "Extract activations",
+    zero_cls_token: bool = False,
 ) -> torch.Tensor:
     backbone.model.eval()
     hook = ActivationHook(backbone.spec.num_prefix_tokens)
@@ -55,6 +75,7 @@ def extract_patch_activations(
         raise IndexError(
             f"layer_index={layer_index} out of range for {len(blocks)} blocks"
         )
+    cls_hook = _register_cls_zero_pre_hook(blocks, zero_cls_token)
     hook.register(blocks[layer_index])
 
     total = len(dataloader) if max_batches is None else min(len(dataloader), max_batches)
@@ -73,6 +94,8 @@ def extract_patch_activations(
 
     pbar.close()
     hook.remove()
+    if cls_hook is not None:
+        cls_hook.remove()
     out = hook.drain()
     if out.numel() == 0:
         raise RuntimeError(

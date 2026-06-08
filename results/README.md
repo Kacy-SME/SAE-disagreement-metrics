@@ -12,6 +12,9 @@ Large artifacts (SAE weights, activation caches, heatmaps) stay local and are gi
 | `ablations/saebench_fair_best.csv` | Best per backbone |
 | `ablations/momo_density_interventions.csv` | MOMO per_dim vs pca_proj vs zca_whiten |
 | `diagnostics/effective_rank.csv` | PCA effective rank across backbones × layers |
+| `diagnostics/loss_recovered_cls_zero.csv` | `loss_recovered` with decode(0) vs CLS-zero patch proxy |
+| `visualizations/*_top_activations.html` | Self-contained latent inspection reports (base64 thumbnails) |
+| `diagnostics/loss_recovered_cls_zero.csv` | CLS-zero vs decode(0) loss_recovered comparison |
 | `summary_table.csv` | Legacy `run_experiments.py` proxy metrics |
 
 ## Per-run detail

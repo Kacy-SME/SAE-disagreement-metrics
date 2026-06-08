@@ -15,6 +15,7 @@ hf_cache/
 results/**
 !results/ablations/
 !results/diagnostics/
+!results/visualizations/
 !results/README.md
 !results/summary_table.csv
 !results/data_split_manifest.json
@@ -27,6 +28,9 @@ results/ablations/**
 
 results/diagnostics/**
 !results/diagnostics/**/*.csv
+
+results/visualizations/**
+!results/visualizations/**/*.html
 
 # Explicit excludes inside allowed result dirs
 results/**/probe_activation_cache/
