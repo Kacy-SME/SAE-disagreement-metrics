@@ -1,0 +1,8 @@
+{
+  "mono_mean_purity_top20_official": 0.6152946273830155,
+  "mono_median_purity_top20_official": 0.55,
+  "mono_mean_purity_top20_legacy_denom": 0.6150897642038968,
+  "mono_fraction_high_purity_top20": 0.2512998266897747,
+  "mono_top_k": 20.0,
+  "mono_n_test_images": 311.0
+}

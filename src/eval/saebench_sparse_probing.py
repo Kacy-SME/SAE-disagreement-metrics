@@ -18,7 +18,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 from src.data.hirise import MIN_PER_CLASS_PROBE_REPORT
-from src.sae.utils import normalize_activations
+from src.sae.activation_norm import preprocess_activations
 
 # HiRISE v3.2 landmarks_map classmap (ID -> name)
 HIRISE_LANDFORM_NAMES: Dict[str, str] = {
@@ -115,25 +115,45 @@ def _filter_landform_images(
     return np.array([i for i, lab in enumerate(labels) if is_named_landform(lab)])
 
 
+@torch.no_grad()
+def _encode_image_latent_means(
+    sae: nn.Module,
+    acts_cpu: torch.Tensor,
+    n_images: int,
+    patches_per_image: int,
+    device: str,
+    encode_chunk: int = 512,
+) -> np.ndarray:
+    """Mean-pool SAE latents per image without materializing all patches at once."""
+    latent_rows = []
+    for img_i in range(n_images):
+        start = img_i * patches_per_image
+        end = start + patches_per_image
+        img_patches = acts_cpu[start:end]
+        encoded_parts = []
+        for chunk_start in range(0, img_patches.shape[0], encode_chunk):
+            batch = img_patches[chunk_start : chunk_start + encode_chunk].to(device)
+            encoded, _ = sae.encode(batch)
+            encoded_parts.append(encoded.cpu())
+        latent_rows.append(torch.cat(encoded_parts, dim=0).mean(dim=0))
+    return torch.stack(latent_rows, dim=0).numpy()
+
+
+@torch.no_grad()
 def _encode_pooled_features(
     sae: nn.Module,
     backbone_acts: torch.Tensor,
     n_images: int,
-    norm_scalar: float,
+    norm_spec: dict,
     device: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return mean-pooled backbone and SAE latent features per image."""
     patches_per_image = backbone_acts.shape[0] // n_images
-    acts_cpu = normalize_activations(backbone_acts.float(), norm_scalar).cpu()
+    acts_cpu = preprocess_activations(backbone_acts.float(), norm_spec).cpu()
     x_backbone = _pool_image_activations(acts_cpu, n_images, patches_per_image).numpy()
-
-    feat_chunks = []
-    for start in range(0, acts_cpu.shape[0], 2048):
-        batch = acts_cpu[start : start + 2048].to(device)
-        encoded, _ = sae.encode(batch)
-        feat_chunks.append(encoded.cpu())
-    feat_patch = torch.cat(feat_chunks, dim=0)
-    x_latent = _pool_image_activations(feat_patch, n_images, patches_per_image).numpy()
+    x_latent = _encode_image_latent_means(
+        sae, acts_cpu, n_images, patches_per_image, device
+    )
     return x_backbone, x_latent
 
 
@@ -143,6 +163,7 @@ def compute_hirise_sparse_probing(
     backbone_acts: Optional[torch.Tensor] = None,
     n_images: Optional[int] = None,
     labels: Optional[List[str]] = None,
+    norm_spec: dict | None = None,
     norm_scalar: float = 1.0,
     top_k_latents: int = 40,
     test_size: float = 0.2,
@@ -166,6 +187,8 @@ def compute_hirise_sparse_probing(
 
     Otherwise: random holdout on the provided activation tensor (legacy ad-hoc eval).
     """
+    if norm_spec is None:
+        norm_spec = {"preprocess_mode": "scalar", "norm_scalar": norm_scalar}
     device = next(sae.parameters()).device
 
     if official_split:
@@ -179,10 +202,10 @@ def compute_hirise_sparse_probing(
         n_train = len(train_labels)
         n_test = len(test_labels)
         x_bb_train, x_lat_train = _encode_pooled_features(
-            sae, train_backbone_acts, n_train, norm_scalar, device
+            sae, train_backbone_acts, n_train, norm_spec, device
         )
         x_bb_test, x_lat_test = _encode_pooled_features(
-            sae, test_backbone_acts, n_test, norm_scalar, device
+            sae, test_backbone_acts, n_test, norm_spec, device
         )
         le = LabelEncoder()
         le.fit(train_labels + test_labels)
@@ -235,7 +258,7 @@ def compute_hirise_sparse_probing(
 
     filtered_labels = [labels[i] for i in img_idx]
     n_filt = len(img_idx)
-    acts_cpu = normalize_activations(backbone_acts.float(), norm_scalar).cpu()
+    acts_cpu = preprocess_activations(backbone_acts.float(), norm_spec).cpu()
 
     def subset_patches(full: torch.Tensor) -> np.ndarray:
         rows = []
@@ -246,13 +269,18 @@ def compute_hirise_sparse_probing(
         return torch.stack(rows, dim=0).numpy()
 
     x_backbone = subset_patches(acts_cpu)
-    feat_chunks = []
-    for start in range(0, acts_cpu.shape[0], 2048):
-        batch = acts_cpu[start : start + 2048].to(device)
-        encoded, _ = sae.encode(batch)
-        feat_chunks.append(encoded.cpu())
-    feat_patch = torch.cat(feat_chunks, dim=0)
-    x_latent = subset_patches(feat_patch)
+    latent_rows = []
+    for i in img_idx:
+        start = int(i) * patches_per_image
+        end = start + patches_per_image
+        img_patches = acts_cpu[start:end]
+        encoded_parts = []
+        for chunk_start in range(0, img_patches.shape[0], 512):
+            batch = img_patches[chunk_start : chunk_start + 512].to(device)
+            encoded, _ = sae.encode(batch)
+            encoded_parts.append(encoded.cpu())
+        latent_rows.append(torch.cat(encoded_parts, dim=0).mean(dim=0))
+    x_latent = torch.stack(latent_rows, dim=0).numpy()
 
     le = LabelEncoder()
     y = le.fit_transform(filtered_labels)

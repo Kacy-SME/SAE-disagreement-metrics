@@ -1,0 +1,11 @@
+[
+  {
+    "tag": "middle_topk_d1_perdim_aux1p0",
+    "results_subdir": "ablations/momo/middle_topk_d1_perdim_aux1p0",
+    "layer_depth": "middle",
+    "sae_arch": "topk",
+    "dictionary_multiplier": 1,
+    "preprocess_mode": "per_dim",
+    "aux_loss_weight": 1.0
+  }
+]

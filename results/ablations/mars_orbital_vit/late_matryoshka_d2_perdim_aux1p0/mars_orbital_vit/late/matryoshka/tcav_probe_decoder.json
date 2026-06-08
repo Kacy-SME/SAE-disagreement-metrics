@@ -1,0 +1,15 @@
+{
+  "tcav_mean_max_cos_per_class": 0.3094645334141595,
+  "tcav_median_max_cos_per_class": 0.32549089193344116,
+  "tcav_max_cos_any_class": 0.38898032903671265,
+  "tcav_mean_cos_all_pairs": 0.00015404793453485798,
+  "max_cos_per_class": {
+    "0": 0.19269809126853943,
+    "crater": 0.3670111894607544,
+    "dark dune": 0.27000996470451355,
+    "slope streak": 0.37398800253868103,
+    "bright dune": 0.2480732649564743,
+    "impact ejecta": 0.32549089193344116,
+    "swiss cheese": 0.38898032903671265
+  }
+}

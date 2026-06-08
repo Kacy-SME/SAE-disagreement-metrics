@@ -20,11 +20,9 @@ from src.extract.activations import (
 )
 from src.sae.matryoshka import MatryoshkaBatchTopKSAE
 from src.sae.topk import TopKSAE
+from src.sae.activation_norm import preprocess_activations
 from src.sae.utils import (
-    compute_norm_scalar,
     fold_norm_scalar_into_sae,
-    normalize_activations,
-    sae_inference_norm_scalar,
 )
 
 
@@ -78,12 +76,13 @@ def train_sae(
     layer_index: int,
     cfg: Dict[str, Any],
     device: str,
-    norm_scalar: float,
+    norm_spec: Dict[str, Any],
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     steps = int(cfg["steps"])
     batch_size = int(cfg["batch_size"])
     lr = float(cfg["lr"])
     log_every = int(cfg.get("log_every", 100))
+    aux_weight = float(cfg.get("aux_loss_weight", 1.0))
 
     optimizer = torch.optim.AdamW(sae.parameters(), lr=lr)
 
@@ -99,10 +98,10 @@ def train_sae(
             pbar.set_postfix_str("")
 
         batch = buffer.sample(batch_size).to(device)
-        batch = normalize_activations(batch, norm_scalar)
+        batch = preprocess_activations(batch, norm_spec)
 
         optimizer.zero_grad(set_to_none=True)
-        loss_out = sae.loss(batch)
+        loss_out = sae.loss(batch, aux_weight=aux_weight)
         loss_out.total.backward()
         optimizer.step()
         sae.post_grad_step()
@@ -125,7 +124,9 @@ def train_sae(
     pbar.close()
 
     curve = np.stack([recon_curve, sparsity_curve], axis=1)
-    stats = compute_activation_stats(sae, buffer, device, norm_scalar, sample_steps=20)
+    stats = compute_activation_stats(
+        sae, buffer, device, norm_spec, sample_steps=20
+    )
     return curve, stats
 
 
@@ -134,7 +135,7 @@ def compute_activation_stats(
     sae: nn.Module,
     buffer: ActivationBuffer,
     device: str,
-    norm_scalar: float,
+    norm_spec: Dict[str, Any],
     sample_steps: int = 20,
     batch_size: int = 2048,
 ) -> Dict[str, float]:
@@ -147,7 +148,7 @@ def compute_activation_stats(
         if len(buffer) < batch_size:
             break
         batch = buffer.sample(batch_size).to(device)
-        batch = normalize_activations(batch, norm_scalar)
+        batch = preprocess_activations(batch, norm_spec)
         if hasattr(sae, "encode"):
             acts, _ = sae.encode(batch)
         else:
@@ -166,17 +167,39 @@ def compute_activation_stats(
 def save_sae_checkpoint(
     path: Path,
     sae: nn.Module,
-    norm_scalar: float,
+    norm_spec: Dict[str, Any],
     meta: Dict[str, Any],
 ) -> None:
-    fold_norm_scalar_into_sae(sae, norm_scalar)
+    spec = dict(norm_spec)
+    if spec.get("preprocess_mode", "scalar") == "scalar":
+        fold_norm_scalar_into_sae(sae, float(spec.get("norm_scalar", 1.0)))
+        spec["norm_scalar"] = float(spec.get("norm_scalar", 1.0))
+    else:
+        spec["norm_scalar"] = 1.0
     payload = {
         "state_dict": sae.state_dict(),
         "config": sae.config_dict(),
-        "norm_scalar": norm_scalar,
+        "norm_scalar": spec["norm_scalar"],
         "norm_folded": True,
+        "preprocess_mode": spec.get("preprocess_mode", "scalar"),
+        "center_activations": bool(spec.get("center_activations", False)),
         "meta": meta,
     }
+    if spec.get("act_mean") is not None:
+        payload["act_mean"] = spec["act_mean"].cpu()
+    if spec.get("act_std") is not None:
+        payload["act_std"] = spec["act_std"].cpu()
+    if spec.get("pca_components") is not None:
+        payload["pca_components"] = spec["pca_components"].cpu()
+        payload["pca_k_95"] = int(spec.get("pca_k_95", spec["pca_components"].shape[0]))
+        payload["projected_dim"] = int(
+            spec.get("projected_dim", spec["pca_components"].shape[0])
+        )
+        if spec.get("pca_variance_threshold") is not None:
+            payload["pca_variance_threshold"] = float(spec["pca_variance_threshold"])
+    if spec.get("zca_matrix") is not None:
+        payload["zca_matrix"] = spec["zca_matrix"].cpu()
+        payload["zca_eps"] = float(spec.get("zca_eps", 1e-3))
     torch.save(payload, path)
 
 
@@ -197,8 +220,10 @@ def verify_checkpoint_norm_consistency(
     reduction is too low (typical sign of norm_folded=True on unfolded weights).
     """
     min_mse_reduction = 0.3
+    from src.sae.activation_norm import norm_spec_for_eval, preprocess_activations
+
     sae, payload = load_sae_checkpoint(weights_path, device)
-    eval_norm_scalar = sae_inference_norm_scalar(payload)
+    norm_spec = norm_spec_for_eval(payload)
 
     n = min(512, eval_acts.shape[0])
     if n == 0:
@@ -207,7 +232,7 @@ def verify_checkpoint_norm_consistency(
             f"{backbone} layer {layer_index} ({weights_path})."
         )
 
-    acts = normalize_activations(eval_acts[:n].float(), eval_norm_scalar).to(device)
+    acts = preprocess_activations(eval_acts[:n].float(), norm_spec).to(device)
     encoded, _ = sae.encode(acts)
     if hasattr(sae, "nested_reconstructions"):
         recon = sae.nested_reconstructions(acts, encoded)[-1]
@@ -229,7 +254,7 @@ def verify_checkpoint_norm_consistency(
             f"Retrain with --force. "
             f"(backbone={backbone}, layer_index={layer_index}, path={weights_path}, "
             f"norm_folded={payload.get('norm_folded')}, stored_norm_scalar={payload.get('norm_scalar')}, "
-            f"inference_norm_scalar={eval_norm_scalar}, tol={tol})"
+            f"preprocess_mode={payload.get('preprocess_mode', 'scalar')}, tol={tol})"
         )
 
 

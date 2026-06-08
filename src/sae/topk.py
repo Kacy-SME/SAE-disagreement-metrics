@@ -80,12 +80,12 @@ class TopKSAE(nn.Module):
         aux_recon = self.decode(acts + full_aux)
         return F.mse_loss(aux_recon, x)
 
-    def loss(self, x: torch.Tensor) -> SAELossOut:
+    def loss(self, x: torch.Tensor, aux_weight: float = 1.0) -> SAELossOut:
         recon, acts, pre_acts = self.forward(x)
         recon_loss = F.mse_loss(recon, x)
         aux_loss = self._auxk_loss(x, acts, pre_acts)
         l0 = (acts > 0).float().sum(dim=-1).mean()
-        total = recon_loss + aux_loss
+        total = recon_loss + aux_weight * aux_loss
         return SAELossOut(total=total, recon=recon_loss, aux=aux_loss, l0=l0)
 
     @torch.no_grad()

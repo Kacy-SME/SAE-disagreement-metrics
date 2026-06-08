@@ -50,6 +50,12 @@ from src.extract.activations import (  # noqa: E402
     stream_patch_activations_to_buffer,
 )
 from src.paths import CONFIGS_DIR, DEFAULT_PATHS, RESULTS_DIR, resolve_hf_home  # noqa: E402
+from src.sae.activation_norm import (  # noqa: E402
+    EXPERIMENTAL_PREPROCESS_MODES,
+    fit_activation_norm,
+    norm_spec_for_eval,
+    sae_input_dim,
+)
 from src.sae.trainer import (  # noqa: E402
     build_sae,
     load_sae_checkpoint,
@@ -57,7 +63,6 @@ from src.sae.trainer import (  # noqa: E402
     train_sae,
     verify_checkpoint_norm_consistency,
 )
-from src.sae.utils import sae_inference_norm_scalar  # noqa: E402
 
 print("SAE-Experiments: libraries loaded.", flush=True)
 
@@ -129,8 +134,10 @@ def result_dir(
     backbone_name: str,
     layer_depth: str,
     sae_arch: str,
+    results_subdir: str | None = None,
 ) -> Path:
-    return results_root / backbone_name / layer_depth / sae_arch
+    base = results_root / results_subdir if results_subdir else results_root
+    return base / backbone_name / layer_depth / sae_arch
 
 
 def print_experiment_grid(combos: List[Dict[str, Any]]) -> None:
@@ -199,6 +206,40 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fast test: 300 SAE steps, 200 train / 50 eval images, small buffer",
     )
+    parser.add_argument(
+        "--results-subdir",
+        default=None,
+        help="Write under results/<subdir>/ (e.g. ablations/momo/d2_perdim)",
+    )
+    parser.add_argument(
+        "--preprocess-mode",
+        choices=["scalar", "per_dim", "pca_proj", "zca_whiten"],
+        default=None,
+        help="SAE input normalization (default: training.preprocess_mode in config)",
+    )
+    parser.add_argument(
+        "--allow-experimental-preprocess",
+        action="store_true",
+        help="Allow pca_proj / zca_whiten on non-MOMO backbones (MOMO-only by default)",
+    )
+    parser.add_argument(
+        "--center-activations",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Subtract per-dimension mean before SAE (per_dim mode only)",
+    )
+    parser.add_argument(
+        "--dictionary-multiplier",
+        type=int,
+        default=None,
+        help="Override TopK dictionary_multiplier (Matryoshka uses [1, m])",
+    )
+    parser.add_argument(
+        "--aux-loss-weight",
+        type=float,
+        default=None,
+        help="Weight on auxiliary dead-latent loss (default: 1.0)",
+    )
     return parser.parse_args()
 
 
@@ -229,7 +270,13 @@ def run_single_experiment(
     sae_arch = combo["sae_arch"]
     hidden_dim = combo["hidden_dim"]
 
-    out_dir = result_dir(Path(args.results_dir), backbone_name, layer_depth, sae_arch)
+    out_dir = result_dir(
+        Path(args.results_dir),
+        backbone_name,
+        layer_depth,
+        sae_arch,
+        getattr(args, "results_subdir", None),
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     weights_path = out_dir / "sae_weights.pt"
 
@@ -299,24 +346,68 @@ def run_single_experiment(
             desc=f"[{run_label}] Stream train activations",
         )
         buffer.mark_refilled(training_step=0)
+        train_cfg = exp_cfg["training"]
+        preprocess_mode = (
+            args.preprocess_mode
+            if args.preprocess_mode is not None
+            else train_cfg.get("preprocess_mode", "scalar")
+        )
+        if (
+            preprocess_mode in EXPERIMENTAL_PREPROCESS_MODES
+            and backbone_name != "momo"
+            and not args.allow_experimental_preprocess
+        ):
+            raise ValueError(
+                f"{preprocess_mode!r} is MOMO-only for now; pass "
+                "--allow-experimental-preprocess to override."
+            )
+        center = (
+            args.center_activations
+            if args.center_activations is not None
+            else train_cfg.get("center_activations", True)
+        )
+        norm_spec = fit_activation_norm(
+            buffer, mode=preprocess_mode, center=bool(center)
+        )
+        if preprocess_mode == "scalar":
+            norm_spec["norm_scalar"] = train_norm_scalar
+        effective_dim = sae_input_dim(hidden_dim, norm_spec)
         tqdm.write(
             f"  buffer vectors={buffer.storage.shape[0]} "
-            f"hidden_dim={hidden_dim} norm_scalar={train_norm_scalar:.4f}"
+            f"hidden_dim={hidden_dim} sae_d_in={effective_dim} "
+            f"preprocess={preprocess_mode} "
+            f"norm_scalar={norm_spec.get('norm_scalar', 1.0):.4f}"
+            + (
+                f" pca_k_95={norm_spec['pca_k_95']}"
+                if preprocess_mode == "pca_proj"
+                else ""
+            )
         )
         gc.collect()
         if device.startswith("cuda"):
             torch.cuda.empty_cache()
 
-        sae = build_sae(sae_arch, hidden_dim, exp_cfg["sae_architectures"][sae_arch], device)
+        sae_cfg = dict(exp_cfg["sae_architectures"][sae_arch])
+        if args.dictionary_multiplier is not None:
+            mult = int(args.dictionary_multiplier)
+            if sae_arch == "topk":
+                sae_cfg["dictionary_multiplier"] = mult
+            else:
+                sae_cfg["nested_multipliers"] = [1, mult]
+        training_cfg = dict(train_cfg)
+        if args.aux_loss_weight is not None:
+            training_cfg["aux_loss_weight"] = float(args.aux_loss_weight)
+
+        sae = build_sae(sae_arch, effective_dim, sae_cfg, device)
         curve, train_stats = train_sae(
             sae=sae,
             buffer=buffer,
             backbone=backbone,
             train_loader=train_loader,
             layer_index=layer_index,
-            cfg=exp_cfg["training"],
+            cfg=training_cfg,
             device=device,
-            norm_scalar=train_norm_scalar,
+            norm_spec=norm_spec,
         )
 
         np.save(out_dir / "training_loss_curve.npy", curve)
@@ -328,17 +419,26 @@ def run_single_experiment(
             "layer_depth": layer_depth,
             "layer_index": layer_index,
             "sae_arch": sae_arch,
+            "preprocess_mode": preprocess_mode,
+            "hidden_dim": hidden_dim,
+            "sae_d_in": effective_dim,
+            "dictionary_multiplier": sae_cfg.get("dictionary_multiplier"),
+            "nested_multipliers": sae_cfg.get("nested_multipliers"),
+            "aux_loss_weight": training_cfg.get("aux_loss_weight", 1.0),
             "data_split": {
                 "num_train": split_info["num_train"],
                 "num_eval": split_info["num_eval"],
             },
         }
-        save_sae_checkpoint(weights_path, sae, train_norm_scalar, meta)
+        if preprocess_mode == "pca_proj":
+            meta["pca_k_95"] = int(norm_spec["pca_k_95"])
+        if preprocess_mode == "zca_whiten":
+            meta["zca_eps"] = float(norm_spec.get("zca_eps", 1e-3))
+        save_sae_checkpoint(weights_path, sae, norm_spec, meta)
         tqdm.write(f"Saved SAE weights to {weights_path}")
         sae, payload = load_sae_checkpoint(weights_path, device)
 
-    # SAE weights have normalization folded in; eval uses raw backbone activations.
-    eval_norm_scalar = sae_inference_norm_scalar(payload)
+    eval_norm_spec = norm_spec_for_eval(payload)
 
     n_eval = min(int(data_cfg["eval_images"]), len(eval_set))
     eval_subset = torch.utils.data.Subset(eval_set, list(range(n_eval)))
@@ -374,7 +474,7 @@ def run_single_experiment(
     eval_metrics = evaluate_sae_on_activations(
         sae=sae,
         activations=eval_acts,
-        norm_scalar=eval_norm_scalar,
+        norm_spec=eval_norm_spec,
         device=device,
     )
 
@@ -384,7 +484,7 @@ def run_single_experiment(
         eval_dataset=eval_subset,
         eval_loader=eval_loader_indexed,
         layer_index=layer_index,
-        norm_scalar=eval_norm_scalar,
+        norm_spec=eval_norm_spec,
         device=device,
     )
     np.save(out_dir / "feature_activation_matrix.npy", feature_matrix)
@@ -398,6 +498,10 @@ def run_single_experiment(
         "layer_depth": layer_depth,
         "layer_index": layer_index,
         "sae_arch": sae_arch,
+        "preprocess_mode": payload.get("meta", {}).get(
+            "preprocess_mode", payload.get("preprocess_mode", "scalar")
+        ),
+        "pca_k_95": payload.get("meta", {}).get("pca_k_95", float("nan")),
         "loss_recovered": eval_metrics["loss_recovered"],
         "loss_recovered_valid": eval_metrics.get("loss_recovered_valid", True),
         "mse_reduction_vs_zero": eval_metrics.get("mse_reduction_vs_zero", float("nan")),

@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from src.backbones.base import BackboneAdapter
 from src.extract.activations import extract_patch_activations
-from src.sae.utils import normalize_activations
+from src.sae.activation_norm import preprocess_activations
 
 
 @torch.no_grad()
@@ -31,11 +31,11 @@ def reconstruction_mse(sae: nn.Module, x: torch.Tensor) -> float:
 def evaluate_sae_on_activations(
     sae: nn.Module,
     activations: torch.Tensor,
-    norm_scalar: float,
+    norm_spec: dict,
     device: str,
     batch_size: int = 2048,
 ) -> Dict[str, float]:
-    acts = normalize_activations(activations, norm_scalar).to(device)
+    acts = preprocess_activations(activations, norm_spec).to(device)
     n = acts.shape[0]
 
     h_with_sae = []
@@ -120,7 +120,7 @@ def compute_feature_activation_matrix(
     eval_dataset: Subset,
     eval_loader: DataLoader,
     layer_index: int,
-    norm_scalar: float,
+    norm_spec: dict,
     device: str,
 ) -> np.ndarray:
     """
@@ -161,7 +161,7 @@ def compute_feature_activation_matrix(
 
         tokens = hook_storage["tokens"]
         flat = tokens.reshape(-1, tokens.shape[-1])
-        flat = normalize_activations(flat, norm_scalar).to(device)
+        flat = preprocess_activations(flat, norm_spec).to(device)
         encoded, _ = sae.encode(flat)
         patches_per_image = tokens.shape[1]
         encoded = encoded.reshape(b, patches_per_image, -1)

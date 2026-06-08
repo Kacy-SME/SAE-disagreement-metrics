@@ -40,10 +40,7 @@ def normalize_activations(activations: torch.Tensor, scalar: float) -> torch.Ten
 
 
 def sae_inference_norm_scalar(checkpoint_payload: dict) -> float:
-    """
-    Norm scalar to apply to backbone activations at SAE eval time.
-    After save_sae_checkpoint, normalization is folded into weights → use 1.0.
-    """
-    if checkpoint_payload.get("norm_folded", True):
-        return 1.0
-    return float(checkpoint_payload.get("norm_scalar", 1.0))
+    """Backward-compatible scalar for legacy scripts."""
+    from src.sae.activation_norm import inference_norm_scalar
+
+    return inference_norm_scalar(checkpoint_payload)

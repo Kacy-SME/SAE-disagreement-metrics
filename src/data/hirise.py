@@ -115,13 +115,23 @@ def build_readable_index(
             skipped = cached.get("skipped", [])
             # Rebuild sample dicts from cached rel paths
             valid = []
+            stale_missing = 0
             for rel in rel_set:
+                path = images_path / rel
+                if not path.is_file():
+                    stale_missing += 1
+                    continue
                 valid.append(
                     {
-                        "path": images_path / rel,
+                        "path": path,
                         "rel_path": rel,
                         "label": cached.get("labels_by_path", {}).get(rel, ""),
                     }
+                )
+            if stale_missing and show_progress:
+                tqdm.write(
+                    f"[WARN] Dropped {stale_missing} cached HiRISE paths missing under "
+                    f"{images_path} (Drive sync or --rescan-images)."
                 )
             if valid:
                 valid.sort(key=lambda s: s["rel_path"])
@@ -195,14 +205,27 @@ def load_readable_samples_from_cache(
     rel_paths = cached.get("readable_rel_paths", [])
     if not rel_paths:
         return None
-    valid = [
-        {
-            "path": images_path / rel,
-            "rel_path": rel,
-            "label": labels_by_path.get(rel, ""),
-        }
-        for rel in rel_paths
-    ]
+    valid = []
+    stale_missing = 0
+    for rel in rel_paths:
+        path = images_path / rel
+        if not path.is_file():
+            stale_missing += 1
+            continue
+        valid.append(
+            {
+                "path": path,
+                "rel_path": rel,
+                "label": labels_by_path.get(rel, ""),
+            }
+        )
+    if stale_missing:
+        tqdm.write(
+            f"[WARN] Dropped {stale_missing} cached HiRISE paths missing under "
+            f"{images_path} (Drive sync or --rescan-images)."
+        )
+    if not valid:
+        return None
     skipped = cached.get("skipped", [])
     meta = {
         "images_dir": str(images_path.resolve()),
@@ -559,17 +582,26 @@ def save_official_probe_manifest(
     results_root: Path,
     train_samples: List[Dict[str, Any]],
     test_samples: List[Dict[str, Any]],
+    val_samples: List[Dict[str, Any]] | None = None,
+    eval_val_test_samples: List[Dict[str, Any]] | None = None,
 ) -> Path:
-    """Write manifest for official landform probe train/test lists."""
+    """Write manifest for official landform probe train/test (and optional val) lists."""
     path = results_root / "official_probe_split_manifest.json"
+    val_samples = val_samples or []
+    eval_val_test_samples = eval_val_test_samples or []
     payload = {
         "split_file": OFFICIAL_SPLIT_FILENAME,
         "landforms_only": True,
         "expected_test_landforms": 311,
+        "expected_val_landforms": 3738,
         "num_train": len(train_samples),
         "num_test": len(test_samples),
+        "num_val": len(val_samples),
+        "num_eval_val_test": len(eval_val_test_samples),
         "train_class_counts": official_split_class_counts(train_samples),
         "test_class_counts": official_split_class_counts(test_samples),
+        "val_class_counts": official_split_class_counts(val_samples),
+        "eval_val_test_class_counts": official_split_class_counts(eval_val_test_samples),
         "train_rel_paths": [s["rel_path"] for s in train_samples],
         "test_rel_paths": [s["rel_path"] for s in test_samples],
     }

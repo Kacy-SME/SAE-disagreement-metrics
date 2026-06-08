@@ -1,10 +1,36 @@
-results/
+# Large binary artifacts (never commit)
 *.pt
 *.npy
 *.npz
+
+# Python / env
 __pycache__/
 *.pyc
 .venv/
 venv/
 .env
 hf_cache/
+
+# Results: ignore by default, allow summary tables + metrics JSON
+results/**
+!results/ablations/
+!results/diagnostics/
+!results/README.md
+!results/summary_table.csv
+!results/data_split_manifest.json
+!results/official_probe_split_manifest.json
+
+results/ablations/**
+!results/ablations/**/
+!results/ablations/**/*.csv
+!results/ablations/**/*.json
+
+results/diagnostics/**
+!results/diagnostics/**/*.csv
+
+# Explicit excludes inside allowed result dirs
+results/**/probe_activation_cache/
+results/**/spatial_heatmaps/
+results/hirise_readable_cache.json
+results/skipped_hirise_images.json
+results/**/run.log

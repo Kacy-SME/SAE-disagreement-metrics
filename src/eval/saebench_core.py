@@ -12,14 +12,14 @@ from typing import Any, Dict, Tuple
 import torch
 import torch.nn as nn
 
-from src.sae.utils import normalize_activations
+from src.sae.activation_norm import norm_spec_for_eval, preprocess_activations
 
 
 @torch.no_grad()
 def compute_core_metrics(
     sae: nn.Module,
     activations: torch.Tensor,
-    norm_scalar: float = 1.0,
+    norm_spec: dict,
     batch_size: int = 2048,
 ) -> Dict[str, float]:
     """
@@ -27,7 +27,7 @@ def compute_core_metrics(
     """
     device = next(sae.parameters()).device
     # Keep activations on CPU; move batches to GPU only (avoids OOM on 100k+ patches).
-    acts_cpu = normalize_activations(activations.float(), norm_scalar)
+    acts_cpu = preprocess_activations(activations.float(), norm_spec)
     n = acts_cpu.shape[0]
     dict_size = sae.dict_size if hasattr(sae, "dict_size") else sae.encoder.out_features
 
@@ -110,10 +110,11 @@ def compute_core_metrics(
     }
 
 
-def load_sae_for_eval(weights_path, device: str) -> Tuple[nn.Module, Dict[str, Any], float]:
+def load_sae_for_eval(
+    weights_path, device: str
+) -> Tuple[nn.Module, Dict[str, Any], Dict[str, Any]]:
     from src.sae.trainer import load_sae_checkpoint
-    from src.sae.utils import sae_inference_norm_scalar
 
     sae, payload = load_sae_checkpoint(weights_path, device)
-    norm_scalar = sae_inference_norm_scalar(payload)
-    return sae, payload, norm_scalar
+    norm_spec = norm_spec_for_eval(payload)
+    return sae, payload, norm_spec

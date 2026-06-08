@@ -1,0 +1,11 @@
+{
+  "loss_recovered": 0.9940351859863406,
+  "loss_recovered_valid": true,
+  "mse_reduction_vs_zero": 0.9448471809041392,
+  "mean_L0": 40.0,
+  "dead_fraction": 0.83984375,
+  "H_with_sae": 0.06143715186044574,
+  "H_zero_ablate": 1.1139439990123112,
+  "H_original": 0.055121472415824734,
+  "absorption_proxy": 0.9888
+}

@@ -71,10 +71,10 @@ backbones:
     checkpoint_path: null  # defaults to HF: CROMA_base.pt
     checkpoint_filename: CROMA_base.pt
     num_layers: 12
-    patch_size: 16
+    patch_size: 8  # official CROMA s2_encoder patch size
     hidden_dim: 768
-    num_prefix_tokens: 1
-    image_size: 128  # must be divisible by patch_size 16 (native CROMA uses 120)
+    num_prefix_tokens: 0  # patch-only ViT (no CLS)
+    image_size: 128  # divisible by 8 (native CROMA pretrain uses 120)
     normalize:
       mean: [0.485, 0.456, 0.406]
       std: [0.229, 0.224, 0.225]

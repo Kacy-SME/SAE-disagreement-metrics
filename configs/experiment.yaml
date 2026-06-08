@@ -32,6 +32,9 @@ training:
   # 0 = one ViT pass to fill buffer, then 50k SAE steps only (~1–2 h). 0.5 caused ~200 refills.
   buffer_refill_threshold: 0
   log_every: 100
+  preprocess_mode: scalar  # scalar | per_dim | pca_proj | zca_whiten (latter two: MOMO experiments)
+  center_activations: true
+  aux_loss_weight: 1.0
 
 paths:
   results_dir: results

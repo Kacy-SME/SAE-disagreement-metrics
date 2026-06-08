@@ -1,0 +1,37 @@
+backbone,layer_depth,layer_index,sae_arch,preprocess_mode,pca_k_95,loss_recovered,loss_recovered_valid,mse_reduction_vs_zero,mean_L0,dead_fraction,absorption_proxy,error
+croma,early,3,matryoshka,,,,False,,,,,"Checkpoint norm consistency check failed (mse_reduction=0.042). Checkpoint may have been saved with incorrect norm_folded flag. Retrain with --force. (backbone=croma, layer_index=3, path=C:\Users\kacy\Desktop\SAE-Experiments\results\croma\early\matryoshka\sae_weights.pt, norm_folded=True, stored_norm_scalar=28.450488285896256, inference_norm_scalar=1.0, tol=0.15)"
+croma,early,3,topk,,,,False,,,,,"Checkpoint norm consistency check failed (mse_reduction=0.031). Checkpoint may have been saved with incorrect norm_folded flag. Retrain with --force. (backbone=croma, layer_index=3, path=C:\Users\kacy\Desktop\SAE-Experiments\results\croma\early\topk\sae_weights.pt, norm_folded=True, stored_norm_scalar=29.63304066354781, inference_norm_scalar=1.0, tol=0.15)"
+croma,late,9,matryoshka,,,0.9980040963809704,True,0.9839997245522092,40.0,0.87109375,0.9933,
+croma,late,9,topk,,,0.9982238681951064,True,0.9841959544428688,40.0,0.7265625,0.9969,
+croma,middle,6,matryoshka,,,0.9984164234581292,True,0.9880836972211898,40.0,0.8815104141831398,0.9996,
+croma,middle,6,topk,,,0.9986819300642078,True,0.9884004337541388,40.0,0.7630208283662796,0.9994,
+dinov3_sat493m,early,6,matryoshka,,,1.162771973042359,True,0.8026701799605714,40.0,0.683837890625,0.9894,
+dinov3_sat493m,early,6,topk,,,1.2552478996335197,True,0.7920064566124374,40.0,0.739990234375,0.9894,
+dinov3_sat493m,late,18,matryoshka,,,0.9732025800474904,True,0.7177944353269213,40.0,0.349609375,0.7511,
+dinov3_sat493m,late,18,topk,,,0.9903041510684956,True,0.7183740918251946,40.0,0.1279296875,0.7755,
+dinov3_sat493m,middle,12,matryoshka,,,0.9960040000867656,True,0.7316481014349503,40.0,0.51025390625,0.8339,
+dinov3_sat493m,middle,12,topk,,,1.0276549741903311,True,0.7381206387596352,40.0,0.279296875,0.8386,
+mars_orbital_vit,early,3,matryoshka,,,1.7131559415476942,True,0.7163675097955181,40.0,0.50390625,1.0,
+mars_orbital_vit,early,3,topk,,,88.84972195414127,True,0.6593084269059611,40.0,0.6298828125,0.9988,
+mars_orbital_vit,late,9,matryoshka,,,0.969515665752143,True,0.8297177202359605,40.0,0.2473958134651184,0.6982,
+mars_orbital_vit,late,9,topk,,,0.9727510690241808,True,0.8254796679705525,40.0,0.0455729365348815,0.7421,
+mars_orbital_vit,middle,6,matryoshka,,,0.9609904530330426,True,0.8040961721109957,40.0,0.4264323115348816,0.8921,
+mars_orbital_vit,middle,6,topk,,,0.9629579367555048,True,0.8014441877166745,40.0,0.1484375,0.8947,
+momo,early,3,matryoshka,,,1.3918517738147729,True,0.4934565818686576,40.0,0.4944661259651184,0.9998,
+momo,early,3,topk,,,,False,,,,,"Checkpoint norm consistency check failed (mse_reduction=0.177). Checkpoint may have been saved with incorrect norm_folded flag. Retrain with --force. (backbone=momo, layer_index=3, path=C:\Users\kacy\Desktop\SAE-Experiments\results\momo\early\topk\sae_weights.pt, norm_folded=True, stored_norm_scalar=12.681482438881345, inference_norm_scalar=1.0, tol=0.15)"
+momo,late,9,matryoshka,,,0.9957268205313152,True,0.9551906180406412,40.0,0.8444010466337204,0.9874,
+momo,late,9,topk,,,0.9956423892092352,True,0.9562951498548258,40.0,0.6549479067325592,0.9906,
+momo,middle,6,matryoshka,,,0.9940351859863406,True,0.9448471809041392,40.0,0.83984375,0.9888,
+momo,middle,6,topk,pca_proj,59.0,0.9992188519367353,True,0.9973663485145747,39.999979654947914,0.0,1.0,
+prithvi_eo_2,early,3,matryoshka,,,,False,,,,,"Prithvi requires 6-band input but HiRISE is RGB-only. Use RGB-native backbones, or pass --allow-prithvi-rgb-proxy to duplicate RGB channels into 6 bands (not true multispectral data)."
+prithvi_eo_2,early,3,topk,,,,False,,,,,"Prithvi requires 6-band input but HiRISE is RGB-only. Use RGB-native backbones, or pass --allow-prithvi-rgb-proxy to duplicate RGB channels into 6 bands (not true multispectral data)."
+prithvi_eo_2,late,9,matryoshka,,,,False,,,,,"Prithvi requires 6-band input but HiRISE is RGB-only. Use RGB-native backbones, or pass --allow-prithvi-rgb-proxy to duplicate RGB channels into 6 bands (not true multispectral data)."
+prithvi_eo_2,late,9,topk,,,,False,,,,,"Prithvi requires 6-band input but HiRISE is RGB-only. Use RGB-native backbones, or pass --allow-prithvi-rgb-proxy to duplicate RGB channels into 6 bands (not true multispectral data)."
+prithvi_eo_2,middle,6,matryoshka,,,,False,,,,,"Prithvi requires 6-band input but HiRISE is RGB-only. Use RGB-native backbones, or pass --allow-prithvi-rgb-proxy to duplicate RGB channels into 6 bands (not true multispectral data)."
+prithvi_eo_2,middle,6,topk,,,,False,,,,,"Prithvi requires 6-band input but HiRISE is RGB-only. Use RGB-native backbones, or pass --allow-prithvi-rgb-proxy to duplicate RGB channels into 6 bands (not true multispectral data)."
+satmae_pp,early,6,matryoshka,,,1.130058030942484,True,0.7690890386696859,40.0,0.5556640625,0.9618,
+satmae_pp,early,6,topk,,,1.211662969200449,True,0.7421223426509858,40.0,0.558349609375,0.9361,
+satmae_pp,late,18,matryoshka,,,0.982855144378871,True,0.8448705614673235,40.0,0.60498046875,0.6627,
+satmae_pp,late,18,topk,,,0.9950117443609268,True,0.8463775436603095,40.0,0.3798828125,0.6696,
+satmae_pp,middle,12,matryoshka,,,0.9926097934304472,True,0.8851092012928486,39.99997965494792,0.73681640625,0.6924,
+satmae_pp,middle,12,topk,,,1.0009517108967547,True,0.8888637825193881,40.0,0.5390625,0.7317,
