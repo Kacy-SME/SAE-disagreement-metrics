@@ -105,6 +105,57 @@ def extract_patch_activations(
 
 
 @torch.no_grad()
+def extract_image_mean_activations(
+    backbone: BackboneAdapter,
+    dataloader: DataLoader,
+    layer_index: int,
+    device: str = "cuda",
+    max_batches: Optional[int] = None,
+    desc: str = "Extract image activations",
+    zero_cls_token: bool = False,
+) -> torch.Tensor:
+    """Mean-pool patch tokens per image → [n_images, hidden_dim] on CPU."""
+    backbone.model.eval()
+    blocks = backbone.blocks
+    if layer_index < 0 or layer_index >= len(blocks):
+        raise IndexError(
+            f"layer_index={layer_index} out of range for {len(blocks)} blocks"
+        )
+    cls_hook = _register_cls_zero_pre_hook(blocks, zero_cls_token)
+    rows: List[torch.Tensor] = []
+    storage: dict = {}
+
+    def hook(module, inputs, output):
+        patch_tokens = output[:, backbone.spec.num_prefix_tokens :, :]
+        storage["tokens"] = patch_tokens.mean(dim=1)
+
+    handle = blocks[layer_index].register_forward_hook(hook)
+
+    total = len(dataloader) if max_batches is None else min(len(dataloader), max_batches)
+    batch_count = 0
+    pbar = tqdm(dataloader, total=total, desc=desc, unit="batch", leave=False)
+    for batch in pbar:
+        if isinstance(batch, (list, tuple)):
+            images = batch[0]
+        else:
+            images = batch
+        images = images.to(device, non_blocking=True)
+        backbone.forward(images)
+        rows.append(storage["tokens"].detach().cpu())
+        batch_count += 1
+        if max_batches is not None and batch_count >= max_batches:
+            break
+
+    pbar.close()
+    handle.remove()
+    if cls_hook is not None:
+        cls_hook.remove()
+    if not rows:
+        raise RuntimeError(f"{desc}: no image activations collected.")
+    return torch.cat(rows, dim=0)
+
+
+@torch.no_grad()
 def stream_patch_activations_to_buffer(
     backbone: BackboneAdapter,
     dataloader: DataLoader,

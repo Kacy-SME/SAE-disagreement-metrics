@@ -48,6 +48,10 @@ ALL_BACKBONES = [
     "momo",
     "satmae_pp",
 ]
+
+V2_EXTRA_BACKBONES = [
+    "hirise_ctx_themis",
+]
 FAIR_LAYERS = ["middle", "late"]
 DEFAULT_LABELS = Path(
     r"G:\My Drive\metrics&models\mars_data\hirise_v3_2\labels-map-proj-v3_2.txt"
@@ -81,6 +85,16 @@ def parse_args() -> argparse.Namespace:
         "--allow-prithvi-rgb-proxy",
         action="store_true",
         help="Unused for fair backbones; kept for CLI parity",
+    )
+    parser.add_argument(
+        "--include-v2-backbones",
+        action="store_true",
+        help="Also measure hirise_ctx_themis",
+    )
+    parser.add_argument(
+        "--output-name",
+        default="effective_rank.csv",
+        help="Output filename under results/diagnostics/",
     )
     return parser.parse_args()
 
@@ -246,7 +260,9 @@ def main() -> None:
     backbone_cfgs = load_backbone_configs(args.backbones_config)
     readable_set = load_readable_set(args.results_dir)
 
-    backbones = args.backbone or ALL_BACKBONES
+    backbones = args.backbone or list(ALL_BACKBONES)
+    if args.include_v2_backbones and not args.backbone:
+        backbones = list(dict.fromkeys(backbones + V2_EXTRA_BACKBONES))
     layers = args.layer or FAIR_LAYERS
     rows: list[dict] = []
 
@@ -276,7 +292,7 @@ def main() -> None:
 
     out_dir = args.results_dir / "diagnostics"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "effective_rank.csv"
+    out_path = out_dir / args.output_name
     df = pd.DataFrame(rows).sort_values(["backbone", "layer_depth"])
     df.to_csv(out_path, index=False)
     print(f"\nWrote {out_path} ({len(df)} rows)", flush=True)

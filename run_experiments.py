@@ -31,12 +31,11 @@ from src.backbones.registry import (  # noqa: E402
     list_experiment_combinations,
     load_backbone_configs,
 )
-from src.data.hirise import (  # noqa: E402
-    build_hirise_splits,
-    build_readable_index,
-    build_split_info,
-    save_split_manifest,
-    validate_hirise_paths,
+from src.data.post_may2025 import (  # noqa: E402
+    PostMay2025IndexedDataset,
+    build_post_may2025_datasets,
+    default_patch_cache_dir,
+    validate_post_may2025_cache,
 )
 from src.eval.metrics import (  # noqa: E402
     absorption_proxy,
@@ -158,14 +157,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layer", action="append", dest="layer_depth", help="Filter layer depth")
     parser.add_argument("--sae_arch", action="append", help="Filter SAE architecture")
     parser.add_argument(
-        "--hirise_images_dir",
-        default=os.environ.get("HIRISE_IMAGES_DIR", DEFAULT_PATHS["hirise_images_dir"]),
-        help="Directory of real HiRISE v3.2 JPGs (train and eval both come from here)",
-    )
-    parser.add_argument(
-        "--hirise_labels_file",
-        default=os.environ.get("HIRISE_LABELS_FILE", DEFAULT_PATHS["hirise_labels_file"]),
-        help="labels-map-proj-v3_2.txt — no separate test-labels path needed",
+        "--post2025-cache-dir",
+        default=None,
+        help="Post-May 2025 patch cache (default: D:\\hirise_post2025_cache\\patches)",
     )
     parser.add_argument("--results_dir", default=str(RESULTS_DIR))
     parser.add_argument("--config", default=str(CONFIGS_DIR / "experiment.yaml"))
@@ -240,6 +234,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Weight on auxiliary dead-latent loss (default: 1.0)",
     )
+    parser.add_argument(
+        "--dataset",
+        choices=("post2025_hirise", "hirise_post2025"),
+        default=os.environ.get("SAE_DATASET", "post2025_hirise"),
+        help="SAE training corpus (post-May 2025 cached patches only)",
+    )
     return parser.parse_args()
 
 
@@ -262,7 +262,7 @@ def run_single_experiment(
     backbone_cfgs: Dict[str, Any],
     args: argparse.Namespace,
     split_info: Dict[str, Any],
-    readable_samples: List[Dict[str, Any]],
+    post2025_eval_entries: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     backbone_name = combo["backbone"]
     layer_depth = combo["layer_depth"]
@@ -298,14 +298,19 @@ def run_single_experiment(
         allow_prithvi_rgb_proxy=args.allow_prithvi_rgb_proxy,
     )
     transform = backbone.get_transform()
-    train_set, eval_set, _, _ = build_hirise_splits(
-        images_dir=args.hirise_images_dir,
-        labels_file=args.hirise_labels_file,
+    cache_dir = Path(
+        args.post2025_cache_dir
+        or getattr(args, "hirise_post2025_cache_dir", None)
+        or default_patch_cache_dir()
+    )
+    train_set, eval_set, split_info, _train_entries, eval_entries = build_post_may2025_datasets(
+        cache_dir=cache_dir,
         transform=transform,
         train_fraction=float(data_cfg["train_fraction"]),
         seed=seed,
-        readable_samples=readable_samples,
     )
+    split_info = {**split_info, "eval_dataset": "marsbench"}
+    post2025_eval_entries = eval_entries
 
     loaded_existing_checkpoint = False
     if args.reeval_only:
@@ -441,15 +446,22 @@ def run_single_experiment(
     eval_norm_spec = norm_spec_for_eval(payload)
 
     n_eval = min(int(data_cfg["eval_images"]), len(eval_set))
-    eval_subset = torch.utils.data.Subset(eval_set, list(range(n_eval)))
+    eval_indices = list(range(n_eval))
+    eval_subset = torch.utils.data.Subset(eval_set, eval_indices)
+    eval_entry_slice = (
+        post2025_eval_entries[:n_eval]
+        if post2025_eval_entries is not None
+        else eval_set.entries[:n_eval]
+    )
 
     eval_loader_plain = activation_dataloader(
         eval_subset,
         batch_size=batch_size,
         num_workers=num_workers,
     )
+    indexed_eval = PostMay2025IndexedDataset(eval_entry_slice, transform=transform)
     eval_loader_indexed = activation_dataloader(
-        IndexedSubset(eval_subset),
+        indexed_eval,
         batch_size=batch_size,
         num_workers=num_workers,
     )
@@ -575,65 +587,44 @@ def _main_run(
         configs=backbone_cfgs,
     )
 
-    cache_path = results_root / "hirise_readable_cache.json"
-
     print(f"Planned runs: {len(combos)}", flush=True)
     for c in combos:
         print(f"  - {c['backbone']} / {c['layer_depth']} / {c['sae_arch']}", flush=True)
 
-    data_summary = validate_hirise_paths(
-        args.hirise_images_dir,
-        args.hirise_labels_file,
-        cache_path=cache_path,
-        strict=args.strict_data,
-        rescan=args.rescan_images,
+    cache_dir = Path(
+        args.post2025_cache_dir
+        or getattr(args, "hirise_post2025_cache_dir", None)
+        or default_patch_cache_dir()
     )
-    print("HiRISE data validated (real images only):")
-    print(f"  images_dir:       {data_summary['images_dir']}")
-    print(f"  labels_file:      {data_summary['labels_file']}")
-    print(f"  files on disk:    {data_summary['num_images_listed']}")
-    print(f"  readable images:  {data_summary['num_images_readable']}")
-    if data_summary["num_skipped"]:
-        print(f"  skipped (corrupt): {data_summary['num_skipped']}")
-        if data_summary.get("skipped_sample"):
-            print(f"  example skipped:   {data_summary['skipped_sample'][0]}")
+    data_summary = validate_post_may2025_cache(cache_dir)
+    print("SAE training corpus: post-May 2025 HiRISE patches (cache only):")
+    print(f"  cache_dir:      {data_summary['cache_dir']}")
+    print(f"  observations:   {data_summary['n_observations']}")
+    print(f"  patches:        {data_summary['n_patches']}")
     print(f"  {data_summary['note']}")
+    print("Evaluation corpus: Mars-Bench (labeled metrics via compute_saebench.py)")
 
-    cached_samples = None
-    if cache_path.is_file() and not args.rescan_images and not args.strict_data:
-        from src.data.hirise import load_readable_samples_from_cache
-
-        cached_samples = load_readable_samples_from_cache(
-            cache_path, args.hirise_images_dir, args.hirise_labels_file
-        )
-    if cached_samples is not None:
-        readable_samples, skipped, _ = cached_samples
-    else:
-        readable_samples, skipped, _ = build_readable_index(
-            args.hirise_images_dir,
-            args.hirise_labels_file,
-            cache_path=cache_path,
-            strict=args.strict_data,
-            rescan=args.rescan_images,
-            show_progress=True,
-        )
-    readable_samples.sort(key=lambda s: s["rel_path"])
-    if skipped:
-        with (results_root / "skipped_hirise_images.json").open("w", encoding="utf-8") as f:
-            json.dump(skipped, f, indent=2)
-        print(f"  skipped list: {results_root / 'skipped_hirise_images.json'}")
-
-    split_info = build_split_info(
-        readable_samples,
+    _, _, split_info, _train_entries, eval_entries = build_post_may2025_datasets(
+        cache_dir=cache_dir,
         train_fraction=float(exp_cfg["data"]["train_fraction"]),
         seed=int(exp_cfg.get("seed", 42)),
-        images_dir=args.hirise_images_dir,
-        labels_file=args.hirise_labels_file,
     )
-    save_split_manifest(results_root / "data_split_manifest.json", split_info)
+    args._post2025_eval_entries = eval_entries
+    manifest_path = results_root / "post2025_patch_manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as f:
+        json.dump(
+            {
+                **split_info,
+                "n_patch_entries": split_info["n_patches"],
+            },
+            f,
+            indent=2,
+        )
+    with (results_root / "data_split_manifest.json").open("w", encoding="utf-8") as f:
+        json.dump(split_info, f, indent=2)
     print(
-        f"  split: {split_info['num_train']} train / {split_info['num_eval']} eval "
-        f"(manifest: {results_root / 'data_split_manifest.json'})"
+        f"  split manifest: {results_root / 'data_split_manifest.json'} "
+        f"(train={split_info.get('num_train')} eval={split_info.get('num_eval')})"
     )
 
     if any(c["backbone"] == "prithvi_eo_2" for c in combos) and not args.allow_prithvi_rgb_proxy:
@@ -651,7 +642,12 @@ def _main_run(
         )
         try:
             row = run_single_experiment(
-                combo, exp_cfg, backbone_cfgs, args, split_info, readable_samples
+                combo,
+                exp_cfg,
+                backbone_cfgs,
+                args,
+                split_info,
+                post2025_eval_entries=getattr(args, "_post2025_eval_entries", None),
             )
             summary_rows.append(row)
         except Exception as exc:

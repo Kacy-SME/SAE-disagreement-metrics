@@ -94,3 +94,33 @@ backbones:
     normalize:
       mean: [0.485, 0.456, 0.406]
       std: [0.229, 0.224, 0.225]
+
+  hirise_ctx_themis:
+    display_name: MOMO_HiRISE_CTX_THEMIS
+    loader: hirise_ctx_themis
+    model_id: Mirali33/MOMO
+    checkpoint_path: null
+    checkpoint_filename: vit-b-16/hirise_ctx_themis.pth
+    timm_model: vit_base_patch16_224
+    num_layers: 12
+    patch_size: 16
+    hidden_dim: 768
+    num_prefix_tokens: 1
+    image_size: 224
+    normalize:
+      mean: [0.5006, 0.5006, 0.5006]
+      std: [0.1664, 0.1664, 0.1664]
+
+  anysat:
+    display_name: AnySat
+    loader: anysat
+    model_id: g-astruc/AnySat
+    checkpoint_path: null
+    num_layers: 12
+    patch_size: 16
+    hidden_dim: 768
+    num_prefix_tokens: 1
+    image_size: 224
+    normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]

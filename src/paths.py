@@ -24,12 +24,22 @@ def get_default_paths() -> Dict[str, str]:
     mars_data_root = Path(drive_root) / "mars_data"
     hf_home = Path(drive_root) / "hf_cache"
 
+    checkpoints_dir = project_root / "checkpoints"
+
     return {
         "drive_root": str(drive_root),
+        "mars_dino_project_root": str(project_root),
+        "backbone_checkpoints_dir": str(checkpoints_dir),
         "mars_orbital_vit_checkpoint": str(
-            project_root / "checkpoints" / "best_backbone.pt"
+            checkpoints_dir / "best_backbone.pt"
         ),
         "momo_checkpoint": os.environ.get("MOMO_CHECKPOINT_PATH", ""),
+        "hirise_ctx_themis_checkpoint": os.environ.get(
+            "HIRISE_CTX_THEMIS_CHECKPOINT_PATH",
+            str(Path(drive_root) / "existing_model_checkpoints" / "hirise_ctx_themis.pth"),
+        ),
+        "hirise_post2025_dir": os.environ.get("HIRISE_POST2025_DIR", ""),
+        "mars_bench_root": os.environ.get("MARS_BENCH_ROOT", ""),
         "hirise_root": str(mars_data_root / "hirise_v3_2"),
         "hirise_images_dir": str(mars_data_root / "hirise_v3_2" / "images"),
         "hirise_labels_file": str(

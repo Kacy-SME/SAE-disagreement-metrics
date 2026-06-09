@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -24,13 +25,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 def resolve_data_paths(
     results_root: Path, data_dir: Path | None = None
-) -> tuple[Path, Path, Path]:
-    """
-    Locate HiRISE split manifest + readable cache.
-
-    Run weights may live under results/ablations/... while shared data
-    artifacts stay in results/.
-    """
+) -> tuple[Path, Path]:
+    """Locate split manifest (post-2025 training metadata)."""
     if data_dir is not None:
         base = data_dir
     elif (results_root / "data_split_manifest.json").is_file():
@@ -39,31 +35,44 @@ def resolve_data_paths(
         base = PROJECT_ROOT / "results"
     else:
         base = results_root
-    return (
-        base,
-        base / "data_split_manifest.json",
-        base / "hirise_readable_cache.json",
-    )
+    return base, base / "data_split_manifest.json"
+
+
+def dataset_tag_columns() -> dict[str, str]:
+    return {
+        "sae_train_dataset": "post2025_hirise",
+        "eval_dataset": EVAL_DATASET_NAME,
+    }
 
 from src.backbones.registry import create_backbone, load_backbone_configs  # noqa: E402
-from src.data.hirise import (  # noqa: E402
-    HiRISEDataset,
-    build_hirise_splits,
-    filter_readable_official_samples,
-    load_official_split_table,
-    load_readable_cache,
-    official_split_class_counts,
-    save_official_probe_manifest,
+from src.data.marsbench import (  # noqa: E402
+    EVAL_DATASET_NAME,
+    MarsBenchProbeDataset,
+    build_marsbench_probe_splits,
+    default_marsbench_root,
+)
+from src.data.post_may2025 import (  # noqa: E402
+    PostMay2025IndexedDataset,
+    build_post_may2025_datasets,
+    default_patch_cache_dir,
+)
+from src.eval.obs_div import (  # noqa: E402
+    compute_observation_diversity,
+    obs_div_summary_row,
+    save_obs_div_per_latent_csv,
 )
 from src.eval.metrics import absorption_proxy  # noqa: E402
-from src.eval.monosemanticity import load_eval_labels  # noqa: E402
 from src.eval.saebench_core import compute_core_metrics, load_sae_for_eval  # noqa: E402
 from src.eval.saebench_interpretability import (  # noqa: E402
     compute_interpretability_metrics,
     parse_metrics_arg,
 )
 from src.eval.saebench_sparse_probing import compute_hirise_sparse_probing  # noqa: E402
-from src.extract.activations import activation_dataloader, extract_patch_activations  # noqa: E402
+from src.extract.activations import (  # noqa: E402
+    activation_dataloader,
+    extract_image_mean_activations,
+    extract_patch_activations,
+)
 
 
 def discover_runs(results_root: Path) -> list[Path]:
@@ -155,9 +164,7 @@ def load_layer_index(backbone: str, layer_depth: str, sae_arch: str) -> int:
     return 0
 
 
-def proxy_metrics_from_disk(
-    run_dir: Path, split_manifest: Path, readable_cache: Path
-) -> dict:
+def proxy_metrics_from_disk(run_dir: Path) -> dict:
     out = {}
     eval_path = run_dir / "eval_metrics.json"
     if eval_path.is_file():
@@ -173,15 +180,13 @@ def proxy_metrics_from_disk(
         import numpy as np
 
         matrix = np.load(matrix_path)
-        labels = load_eval_labels(split_manifest, readable_cache, matrix.shape[1])
         out["proxy_absorption_fraction"] = absorption_proxy(matrix)
-        if labels:
-            from src.eval.monosemanticity import label_purity_topk
-
-            purities = label_purity_topk(matrix, labels, top_k=20)
-            alive = (matrix > 0).any(axis=1)
-            if alive.any():
-                out["proxy_label_purity_top20"] = float(purities[alive].mean())
+    obs_div_path = run_dir / "obs_div_per_latent.csv"
+    if obs_div_path.is_file():
+        df = pd.read_csv(obs_div_path)
+        if "obs_div" in df.columns and len(df):
+            out["obs_div_mean"] = float(df["obs_div"].mean())
+            out["obs_div_median"] = float(df["obs_div"].median())
     return out
 
 
@@ -213,46 +218,31 @@ def save_scores_csv(results_root: Path, rows: list[dict]) -> None:
 
 
 @torch.no_grad()
-def extract_eval_activations(
+def extract_marsbench_eval_activations(
     run_dir: Path,
     results_root: Path,
     exp_cfg: dict,
     backbone_cfgs: dict,
-    split_manifest: Path,
-    readable_cache: Path,
     device: str,
     allow_prithvi_rgb_proxy: bool,
     cache_acts: bool,
+    marsbench_root: Path | None = None,
+    max_eval_samples: int | None = None,
 ) -> tuple[torch.Tensor, list[str], int]:
     meta = parse_run_path(run_dir, results_root)
-    cache_path = run_dir / "eval_patch_activations.pt"
-    n_eval = min(int(exp_cfg["data"]["eval_images"]), 500)
+    cache_path = run_dir / "marsbench_eval_activations.pt"
 
     if cache_acts and cache_path.is_file():
         payload = torch.load(cache_path, map_location="cpu", weights_only=False)
-        labels = load_eval_labels(split_manifest, readable_cache, payload["n_images"])
-        return payload["activations"], labels, int(payload["n_images"])
+        return (
+            payload["activations"],
+            payload.get("labels", []),
+            int(payload["n_images"]),
+        )
 
     layer_index = load_layer_index(
         meta["backbone"], meta["layer_depth"], meta["sae_arch"]
     )
-    with split_manifest.open(encoding="utf-8") as f:
-        split = json.load(f)
-    images_dir = split["images_dir"]
-    labels_file = split["labels_file"]
-
-    cached = load_readable_cache(readable_cache)
-    if cached is None:
-        raise FileNotFoundError(f"Missing readable cache: {readable_cache}")
-    samples = [
-        {
-            "path": Path(images_dir) / rel,
-            "rel_path": rel,
-            "label": cached["labels_by_path"].get(rel, ""),
-        }
-        for rel in sorted(cached.get("readable_rel_paths", []))
-    ]
-
     backbone = create_backbone(
         meta["backbone"],
         device=device,
@@ -260,29 +250,27 @@ def extract_eval_activations(
         allow_prithvi_rgb_proxy=allow_prithvi_rgb_proxy,
     )
     transform = backbone.get_transform()
-    _, eval_set, _, _ = build_hirise_splits(
-        images_dir=images_dir,
-        labels_file=labels_file,
+    _train_ds, eval_ds, _summary = build_marsbench_probe_splits(
         transform=transform,
-        train_fraction=float(exp_cfg["data"]["train_fraction"]),
-        seed=int(exp_cfg.get("seed", 42)),
-        readable_samples=samples,
+        root=marsbench_root or default_marsbench_root(),
+        eval_splits=("test",),
+        max_eval_samples=max_eval_samples,
     )
-    n_eval = min(int(exp_cfg["data"]["eval_images"]), len(eval_set))
-    eval_subset = torch.utils.data.Subset(eval_set, list(range(n_eval)))
+    n_eval = min(int(exp_cfg["data"]["eval_images"]), len(eval_ds))
+    eval_subset = torch.utils.data.Subset(eval_ds, list(range(n_eval)))
     loader = activation_dataloader(
         eval_subset,
         batch_size=int(exp_cfg["data"]["activation_batch_size"]),
         num_workers=int(exp_cfg["data"].get("dataloader_workers", 0)),
     )
-    acts = extract_patch_activations(
+    acts = extract_image_mean_activations(
         backbone=backbone,
         dataloader=loader,
         layer_index=layer_index,
         device=device,
-        desc=f"SAEBench {meta['backbone']}/{meta['layer_depth']}",
+        desc=f"Mars-Bench eval {meta['backbone']}/{meta['layer_depth']}",
     )
-    labels = load_eval_labels(split_manifest, readable_cache, n_eval)
+    labels = eval_ds.labels[:n_eval]
 
     del backbone
     if device.startswith("cuda"):
@@ -292,24 +280,10 @@ def extract_eval_activations(
     acts_cpu = acts.cpu().float()
     if cache_acts:
         torch.save(
-            {"activations": acts_cpu, "n_images": n_eval},
+            {"activations": acts_cpu, "labels": labels, "n_images": n_eval},
             cache_path,
         )
     return acts_cpu, labels, n_eval
-
-
-def _readable_sample_list(readable_cache: Path, images_dir: str) -> list[dict]:
-    cached = load_readable_cache(readable_cache)
-    if cached is None:
-        raise FileNotFoundError(f"Missing readable cache: {readable_cache}")
-    return [
-        {
-            "path": Path(images_dir) / rel,
-            "rel_path": rel,
-            "label": cached["labels_by_path"].get(rel, ""),
-        }
-        for rel in sorted(cached.get("readable_rel_paths", []))
-    ]
 
 
 def _probe_cache_tag(eval_splits: list[str]) -> str:
@@ -494,110 +468,38 @@ def prefix_probe_metrics(sparse: dict, tag: str) -> dict:
 
 
 @torch.no_grad()
-def extract_official_probe_activations(
+def extract_marsbench_probe_activations(
     run_dir: Path,
     results_root: Path,
     exp_cfg: dict,
     backbone_cfgs: dict,
-    readable_cache: Path,
     device: str,
     allow_prithvi_rgb_proxy: bool,
     cache_acts: bool,
     train_splits: list[str],
     eval_splits: list[str],
-    split_manifest: Path,
     data_dir: Path,
-    probe_act_cache: dict | None = None,
+    marsbench_root: Path | None = None,
+    max_train_samples: int | None = None,
+    max_eval_samples: int | None = None,
 ) -> tuple[torch.Tensor, list[str], int, torch.Tensor, list[str], int, dict]:
-    """
-    ViT forward on official HiRISE landform splits (classes 1–7).
-
-    Probe is fit on train_splits; metrics are computed on eval_splits
-    (e.g. test-only primary, or val+test supplementary).
-
-    Activations depend only on backbone + layer_depth (not SAE arch). Caches are
-    shared under data_dir/probe_activation_cache/ and reused across topk/matryoshka
-    runs in the same process via probe_act_cache.
-    """
+    """ViT forward on pooled Mars-Bench splits for sparse probing / interpretability."""
     meta = parse_run_path(run_dir, results_root)
-
     shared_train, shared_eval = _shared_probe_cache_paths(
         data_dir, meta["backbone"], meta["layer_depth"], train_splits, eval_splits
     )
-    run_train, run_eval = _run_dir_probe_cache_paths(run_dir, eval_splits)
-    sibling = _find_sibling_run_probe_cache(
-        results_root, meta["backbone"], meta["layer_depth"], eval_splits
-    )
 
-    disk_candidates: list[tuple[Path, Path, str]] = [
-        (shared_train, shared_eval, "shared"),
-    ]
-    if sibling is not None:
-        disk_candidates.append((*sibling, "sibling"))
-
-    if cache_acts:
-        for train_path, eval_path, source in disk_candidates:
-            if train_path.is_file() and eval_path.is_file():
-                result = _load_probe_activation_cache(train_path, eval_path)
-                if result is None:
-                    continue
-                tqdm.write(
-                    f"[cache] {meta['backbone']}/{meta['layer_depth']} "
-                    f"probe activations ({source})"
-                )
-                if source != "shared":
-                    _persist_probe_activation_cache(
-                        True,
-                        data_dir,
-                        results_root,
-                        run_dir,
-                        meta,
-                        train_splits,
-                        eval_splits,
-                        result[0],
-                        result[1],
-                        result[3],
-                        result[4],
-                        result[6],
-                    )
-                return result
+    if cache_acts and shared_train.is_file() and shared_eval.is_file():
+        result = _load_probe_activation_cache(shared_train, shared_eval)
+        if result is not None:
+            tqdm.write(
+                f"[cache] {meta['backbone']}/{meta['layer_depth']} Mars-Bench probe activations"
+            )
+            return result
 
     layer_index = load_layer_index(
         meta["backbone"], meta["layer_depth"], meta["sae_arch"]
     )
-    with split_manifest.open(encoding="utf-8") as f:
-        split = json.load(f)
-    images_dir = split["images_dir"]
-    labels_file = split["labels_file"]
-
-    readable_set = set(load_readable_cache(readable_cache).get("readable_rel_paths", []))
-    split_rows = load_official_split_table(labels_file)
-    train_samples = filter_readable_official_samples(
-        split_rows, readable_set, train_splits, landforms_only=True
-    )
-    eval_samples = filter_readable_official_samples(
-        split_rows, readable_set, eval_splits, landforms_only=True
-    )
-    test_samples = filter_readable_official_samples(
-        split_rows, readable_set, ["test"], landforms_only=True
-    )
-    val_samples = filter_readable_official_samples(
-        split_rows, readable_set, ["val"], landforms_only=True
-    )
-    save_official_probe_manifest(
-        data_dir,
-        train_samples,
-        test_samples,
-        val_samples=val_samples,
-        eval_val_test_samples=eval_samples if set(eval_splits) == {"val", "test"} else None,
-    )
-    eval_class_counts = official_split_class_counts(eval_samples)
-    if eval_splits == ["test"] and len(test_samples) < 280:
-        tqdm.write(
-            f"[WARN] Official test landforms readable: {len(test_samples)}/311 "
-            f"(extract missing images; see official_probe_split_manifest.json)."
-        )
-
     backbone = create_backbone(
         meta["backbone"],
         device=device,
@@ -605,31 +507,25 @@ def extract_official_probe_activations(
         allow_prithvi_rgb_proxy=allow_prithvi_rgb_proxy,
     )
     transform = backbone.get_transform()
+    root = marsbench_root or default_marsbench_root()
+    train_ds, eval_ds, summary = build_marsbench_probe_splits(
+        transform=transform,
+        root=root,
+        train_splits=tuple(train_splits),
+        eval_splits=tuple(eval_splits),
+        max_train_samples=max_train_samples,
+        max_eval_samples=max_eval_samples,
+    )
     batch_size = int(exp_cfg["data"]["activation_batch_size"])
     num_workers = int(exp_cfg["data"].get("dataloader_workers", 0))
 
-    def forward_samples(samples: list[dict], desc: str) -> torch.Tensor:
-        if not samples:
-            raise RuntimeError(f"{desc}: no readable official-split images")
-        dataset = HiRISEDataset(
-            images_dir=images_dir,
-            labels_file=labels_file,
-            transform=transform,
-            samples=[
-                {
-                    "path": Path(images_dir) / s["rel_path"],
-                    "rel_path": s["rel_path"],
-                    "label": s["label"],
-                }
-                for s in samples
-            ],
-        )
+    def forward_dataset(dataset: MarsBenchProbeDataset, desc: str) -> torch.Tensor:
         loader = activation_dataloader(
             dataset,
             batch_size=batch_size,
             num_workers=num_workers,
         )
-        return extract_patch_activations(
+        return extract_image_mean_activations(
             backbone=backbone,
             dataloader=loader,
             layer_index=layer_index,
@@ -637,16 +533,16 @@ def extract_official_probe_activations(
             desc=desc,
         )
 
-    train_acts = forward_samples(
-        train_samples,
-        f"Probe-train {meta['backbone']}/{meta['layer_depth']}",
+    train_acts = forward_dataset(
+        train_ds, f"Mars-Bench probe-train {meta['backbone']}/{meta['layer_depth']}"
     ).cpu().float()
-    eval_acts = forward_samples(
-        eval_samples,
-        f"Probe-eval-{_probe_cache_tag(eval_splits)} {meta['backbone']}/{meta['layer_depth']}",
+    eval_acts = forward_dataset(
+        eval_ds,
+        f"Mars-Bench probe-eval {meta['backbone']}/{meta['layer_depth']}",
     ).cpu().float()
-    train_labels = [s["label"] for s in train_samples]
-    eval_labels = [s["label"] for s in eval_samples]
+    train_labels = train_ds.labels
+    eval_labels = eval_ds.labels
+    eval_class_counts = summary.get("eval_class_counts", {})
 
     del backbone
     if device.startswith("cuda"):
@@ -667,8 +563,7 @@ def extract_official_probe_activations(
         eval_labels,
         eval_class_counts,
     )
-
-    result = (
+    return (
         train_acts,
         train_labels,
         len(train_labels),
@@ -677,25 +572,24 @@ def extract_official_probe_activations(
         len(eval_labels),
         eval_class_counts,
     )
-    return result
 
 
-def run_official_sparse_probe(
+def run_marsbench_sparse_probe(
     sae,
     norm_spec: dict,
     run_dir: Path,
     results_root: Path,
     exp_cfg: dict,
     backbone_cfgs: dict,
-    readable_cache: Path,
     device: str,
     allow_prithvi_rgb_proxy: bool,
     cache_acts: bool,
     train_splits: list[str],
     eval_splits: list[str],
-    split_manifest: Path,
     data_dir: Path,
-    probe_act_cache: dict | None = None,
+    marsbench_root: Path | None = None,
+    max_train_samples: int | None = None,
+    max_eval_samples: int | None = None,
 ) -> dict:
     (
         train_acts,
@@ -705,26 +599,26 @@ def run_official_sparse_probe(
         eval_labels,
         _n_eval,
         eval_counts,
-    ) = extract_official_probe_activations(
+    ) = extract_marsbench_probe_activations(
         run_dir,
         results_root,
         exp_cfg,
         backbone_cfgs,
-        readable_cache,
         device,
         allow_prithvi_rgb_proxy,
         cache_acts,
         train_splits=train_splits,
         eval_splits=eval_splits,
-        split_manifest=split_manifest,
         data_dir=data_dir,
-        probe_act_cache=probe_act_cache,
+        marsbench_root=marsbench_root,
+        max_train_samples=max_train_samples,
+        max_eval_samples=max_eval_samples,
     )
-    split_label = "official_test" if eval_splits == ["test"] else "val_test"
+    split_label = "marsbench_test" if eval_splits == ["test"] else "marsbench_val_test"
     return compute_hirise_sparse_probing(
         sae,
         norm_spec=norm_spec,
-        landforms_only=True,
+        landforms_only=False,
         train_backbone_acts=train_acts,
         train_labels=train_labels,
         test_backbone_acts=eval_acts,
@@ -742,15 +636,13 @@ def run_interpretability_for_run(
     results_root: Path,
     exp_cfg: dict,
     backbone_cfgs: dict,
-    readable_cache: Path,
     device: str,
     allow_prithvi_rgb_proxy: bool,
     cache_acts: bool,
     metrics: set[str],
     probe_train_splits: list[str],
-    split_manifest: Path,
     data_dir: Path,
-    probe_act_cache: dict | None = None,
+    marsbench_root: Path | None = None,
 ) -> dict:
     weights = run_dir / "sae_weights.pt"
     if not weights.is_file():
@@ -765,20 +657,18 @@ def run_interpretability_for_run(
         test_labels,
         _,
         _,
-    ) = extract_official_probe_activations(
+    ) = extract_marsbench_probe_activations(
         run_dir,
         results_root,
         exp_cfg,
         backbone_cfgs,
-        readable_cache,
         device,
         allow_prithvi_rgb_proxy,
         cache_acts,
         train_splits=probe_train_splits,
         eval_splits=["test"],
-        split_manifest=split_manifest,
         data_dir=data_dir,
-        probe_act_cache=probe_act_cache,
+        marsbench_root=marsbench_root,
     )
     out = compute_interpretability_metrics(
         sae,
@@ -820,6 +710,62 @@ def merge_rows_into_fair_csv(fair_csv: Path, rows: list[dict]) -> None:
     fair.to_csv(fair_csv, index=False)
 
 
+def compute_obs_div_for_run(
+    run_dir: Path,
+    results_root: Path,
+    exp_cfg: dict,
+    backbone_cfgs: dict,
+    device: str,
+    allow_prithvi_rgb_proxy: bool,
+    post2025_cache_dir: Path | None = None,
+) -> dict:
+    weights = run_dir / "sae_weights.pt"
+    if not weights.is_file():
+        return {}
+    meta = parse_run_path(run_dir, results_root)
+    layer_index = load_layer_index(
+        meta["backbone"], meta["layer_depth"], meta["sae_arch"]
+    )
+    sae, _, norm_spec = load_sae_for_eval(weights, device)
+    backbone = create_backbone(
+        meta["backbone"],
+        device=device,
+        configs=backbone_cfgs,
+        allow_prithvi_rgb_proxy=allow_prithvi_rgb_proxy,
+    )
+    transform = backbone.get_transform()
+    _train_ds, _eval_ds, _info, _te, eval_entries = build_post_may2025_datasets(
+        cache_dir=post2025_cache_dir or default_patch_cache_dir(),
+        transform=transform,
+        train_fraction=float(exp_cfg["data"]["train_fraction"]),
+        seed=int(exp_cfg.get("seed", 42)),
+    )
+    n_eval = min(int(exp_cfg["data"]["eval_images"]), len(eval_entries))
+    eval_slice = eval_entries[:n_eval]
+    eval_ds = PostMay2025IndexedDataset(eval_slice, transform=transform)
+    loader = activation_dataloader(
+        eval_ds,
+        batch_size=int(exp_cfg["data"]["activation_batch_size"]),
+        num_workers=int(exp_cfg["data"].get("dataloader_workers", 0)),
+    )
+    obs_metrics = compute_observation_diversity(
+        sae=sae,
+        backbone=backbone,
+        dataloader=loader,
+        obs_ids=eval_ds.obs_ids,
+        layer_index=layer_index,
+        norm_spec=norm_spec,
+        device=device,
+    )
+    per_latent = obs_metrics.pop("obs_div_per_latent")
+    save_obs_div_per_latent_csv(per_latent, run_dir / "obs_div_per_latent.csv")
+    del sae, backbone
+    if device.startswith("cuda"):
+        torch.cuda.empty_cache()
+    gc.collect()
+    return obs_div_summary_row(obs_metrics)
+
+
 def process_run(
     run_dir: Path,
     results_root: Path,
@@ -830,21 +776,22 @@ def process_run(
     do_extract: bool,
     cache_acts: bool,
     core_batch_size: int,
-    landforms_only: bool = False,
     probe_official_test: bool = False,
     probe_supplementary: bool = False,
     probe_train_splits: list[str] | None = None,
     data_dir: Path | None = None,
     metrics: set[str] | None = None,
     metrics_only: bool = False,
-    probe_act_cache: dict | None = None,
+    skip_probe: bool = False,
+    marsbench_root: Path | None = None,
+    post2025_cache_dir: Path | None = None,
+    marsbench_max_train: int | None = None,
+    marsbench_max_eval: int | None = None,
 ) -> dict:
     meta = parse_run_path(run_dir, results_root)
-    row = {**meta, "saebench_status": "proxy_only"}
-    _data_dir, split_manifest, readable_cache = resolve_data_paths(
-        results_root, data_dir
-    )
-    row.update(proxy_metrics_from_disk(run_dir, split_manifest, readable_cache))
+    row = {**meta, **dataset_tag_columns(), "saebench_status": "proxy_only"}
+    _data_dir, _split_manifest = resolve_data_paths(results_root, data_dir)
+    row.update(proxy_metrics_from_disk(run_dir))
     metrics = metrics or set()
 
     if metrics_only and metrics:
@@ -854,15 +801,13 @@ def process_run(
                 results_root,
                 exp_cfg,
                 backbone_cfgs,
-                readable_cache,
                 device,
                 allow_prithvi_rgb_proxy,
                 cache_acts,
                 metrics,
-                probe_train_splits or ["train"],
-                split_manifest,
+                probe_train_splits or ["train", "val"],
                 _data_dir,
-                probe_act_cache=probe_act_cache,
+                marsbench_root=marsbench_root,
             )
         )
         row["saebench_status"] = "interpretability:" + "+".join(sorted(metrics))
@@ -876,60 +821,74 @@ def process_run(
         row["saebench_status"] = "skip_no_weights"
         return row
 
+    sae, _, norm_spec = load_sae_for_eval(weights, device)
     use_prithvi_proxy = allow_prithvi_rgb_proxy or meta["backbone"] == "prithvi_eo_2"
-    acts, labels, n_images = extract_eval_activations(
+    acts, labels, n_images = extract_marsbench_eval_activations(
         run_dir,
         results_root,
         exp_cfg,
         backbone_cfgs,
-        split_manifest,
-        readable_cache,
         device,
         use_prithvi_proxy,
         cache_acts=cache_acts,
+        marsbench_root=marsbench_root,
+        max_eval_samples=marsbench_max_eval,
     )
-    sae, _, norm_spec = load_sae_for_eval(weights, device)
     core = compute_core_metrics(
         sae, acts, norm_spec=norm_spec, batch_size=core_batch_size
     )
     row.update(core)
-    if landforms_only and probe_official_test:
-        sparse = run_official_sparse_probe(
+    row.update(
+        compute_obs_div_for_run(
+            run_dir,
+            results_root,
+            exp_cfg,
+            backbone_cfgs,
+            device,
+            allow_prithvi_rgb_proxy,
+            post2025_cache_dir=post2025_cache_dir,
+        )
+    )
+    if skip_probe:
+        row["saebench_status"] = "core+obs_div+proxy (probe disabled)"
+        row["probe_disabled"] = True
+    elif probe_official_test:
+        sparse = run_marsbench_sparse_probe(
             sae,
             norm_spec,
             run_dir,
             results_root,
             exp_cfg,
             backbone_cfgs,
-            readable_cache,
             device,
             allow_prithvi_rgb_proxy,
             cache_acts,
-            train_splits=probe_train_splits or ["train"],
+            train_splits=probe_train_splits or ["train", "val"],
             eval_splits=["test"],
-            split_manifest=split_manifest,
             data_dir=_data_dir,
-            probe_act_cache=probe_act_cache,
+            marsbench_root=marsbench_root,
+            max_train_samples=marsbench_max_train,
+            max_eval_samples=marsbench_max_eval,
         )
         row.update(sparse)
-        status = "core+sparse+proxy+official_test311"
+        status = "core+sparse+obs_div+marsbench_test"
         if probe_supplementary:
-            supp = run_official_sparse_probe(
+            supp = run_marsbench_sparse_probe(
                 sae,
                 norm_spec,
                 run_dir,
                 results_root,
                 exp_cfg,
                 backbone_cfgs,
-                readable_cache,
                 device,
                 allow_prithvi_rgb_proxy,
                 cache_acts,
-                train_splits=probe_train_splits or ["train"],
+                train_splits=probe_train_splits or ["train", "val"],
                 eval_splits=["val", "test"],
-                split_manifest=split_manifest,
                 data_dir=_data_dir,
-                probe_act_cache=probe_act_cache,
+                marsbench_root=marsbench_root,
+                max_train_samples=marsbench_max_train,
+                max_eval_samples=marsbench_max_eval,
             )
             row.update(prefix_probe_metrics(supp, "supp"))
             status += "+supp_val_test"
@@ -941,29 +900,25 @@ def process_run(
             n_images,
             labels,
             norm_spec=norm_spec,
-            landforms_only=landforms_only,
+            landforms_only=False,
         )
         row.update(sparse)
-        row["saebench_status"] = (
-            "core+sparse+proxy+landforms7" if landforms_only else "core+sparse+proxy"
-        )
+        row["saebench_status"] = "core+sparse+obs_div+marsbench"
 
-    if metrics and landforms_only and probe_official_test:
+    if metrics and probe_official_test and not skip_probe:
         row.update(
             run_interpretability_for_run(
                 run_dir,
                 results_root,
                 exp_cfg,
                 backbone_cfgs,
-                readable_cache,
                 device,
                 allow_prithvi_rgb_proxy,
                 cache_acts,
                 metrics,
-                probe_train_splits or ["train"],
-                split_manifest,
+                probe_train_splits or ["train", "val"],
                 _data_dir,
-                probe_act_cache=probe_act_cache,
+                marsbench_root=marsbench_root,
             )
         )
         row["saebench_status"] += "+interp:" + "+".join(sorted(metrics))
@@ -995,8 +950,30 @@ def main() -> None:
     parser.add_argument(
         "--cache-activations",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Save activation .pt caches per run (default: off; use --cache-activations when disk allows)",
+        default=True,
+        help="Save activation .pt caches per run (default: on; pass --no-cache-activations to disable)",
+    )
+    parser.add_argument(
+        "--marsbench-root",
+        type=Path,
+        default=None,
+        help="Mars-Bench data root (default: MARS_BENCH_ROOT or Drive/Mars-Bench)",
+    )
+    parser.add_argument(
+        "--post2025-cache-dir",
+        type=Path,
+        default=None,
+        help="Post-2025 patch cache for obs_div (default: D:\\hirise_post2025_cache\\patches)",
+    )
+    parser.add_argument(
+        "--skip-probe",
+        action="store_true",
+        help="Skip Mars-Bench sparse probe F1",
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Cap Mars-Bench probe/eval samples for fast local testing",
     )
     parser.add_argument(
         "--core-batch-size",
@@ -1080,9 +1057,7 @@ def main() -> None:
 
     results_root = Path(args.results_dir)
     data_dir_arg = Path(args.data_dir) if args.data_dir else None
-    data_dir, split_manifest, readable_cache = resolve_data_paths(
-        results_root, data_dir_arg
-    )
+    data_dir, _split_manifest = resolve_data_paths(results_root, data_dir_arg)
     with Path(args.config).open(encoding="utf-8") as f:
         exp_cfg = yaml.safe_load(f)
     backbone_cfgs = load_backbone_configs()
@@ -1101,15 +1076,12 @@ def main() -> None:
         args.sae_arch,
     )
 
-    if args.probe_landforms_only:
-        if args.probe_official_test and not args.probe_adhoc_eval:
-            probe_mode = "official test (311 landforms, classes 1–7)"
-            if args.probe_supplementary:
-                probe_mode += " + supplementary val+test"
-        else:
-            probe_mode = "adhoc holdout (~87 landforms)"
+    if args.probe_official_test and not args.probe_adhoc_eval:
+        probe_mode = "Mars-Bench test split"
+        if args.probe_supplementary:
+            probe_mode += " + supplementary val+test"
     else:
-        probe_mode = "all 8 classes (incl. other)"
+        probe_mode = "Mars-Bench pooled holdout"
     train_splits = [s.strip() for s in args.probe_train_splits.split(",") if s.strip()]
     metrics_bit = f" | metrics={','.join(sorted(metrics))}" if metrics else ""
     print(
@@ -1118,7 +1090,13 @@ def main() -> None:
         flush=True,
     )
     rows: list[dict] = []
-    probe_act_cache: dict = {}
+    skip_probe = args.skip_probe
+    marsbench_max_train = 2000 if args.smoke else None
+    marsbench_max_eval = 200 if args.smoke else None
+    if args.smoke:
+        exp_cfg = dict(exp_cfg)
+        exp_cfg["data"] = dict(exp_cfg["data"])
+        exp_cfg["data"]["eval_images"] = min(int(exp_cfg["data"]["eval_images"]), 200)
 
     for run_dir in tqdm(runs, desc="SAEBench", unit="run"):
         meta = parse_run_path(run_dir, results_root)
@@ -1139,14 +1117,17 @@ def main() -> None:
                 do_extract=args.extract and not args.metrics_only,
                 cache_acts=args.cache_activations,
                 core_batch_size=args.core_batch_size,
-                landforms_only=args.probe_landforms_only,
                 probe_official_test=args.probe_official_test and not args.probe_adhoc_eval,
                 probe_supplementary=args.probe_supplementary and not args.probe_adhoc_eval,
                 probe_train_splits=train_splits,
                 data_dir=data_dir,
                 metrics=metrics,
                 metrics_only=args.metrics_only,
-                probe_act_cache=probe_act_cache,
+                skip_probe=skip_probe,
+                marsbench_root=args.marsbench_root,
+                post2025_cache_dir=args.post2025_cache_dir,
+                marsbench_max_train=marsbench_max_train,
+                marsbench_max_eval=marsbench_max_eval,
             )
             supp_n = row.get("sparse_probe_supp_num_images")
             supp_f1 = row.get("sparse_probe_supp_f1_sae_latents")

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from itertools import product
@@ -43,11 +44,13 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON = Path(r"c:\Users\kacy\Desktop\Orbital_ViT\.venv\Scripts\python.exe")
-HIRISE_IMAGES = Path(r"D:\hirise_v3_2\images")
-HIRISE_LABELS = Path(
-    r"G:\My Drive\metrics&models\mars_data\hirise_v3_2\labels-map-proj-v3_2.txt"
+sys.path.insert(0, str(PROJECT_ROOT))
+PYTHON = Path(os.environ.get("PYTHON", sys.executable))
+POST2025_CACHE = Path(
+    os.environ.get("POST2025_CACHE_DIR", r"D:\hirise_post2025_cache\patches")
 )
+SAE_TRAIN_DATASET = "post2025_hirise"
+EVAL_DATASET = "marsbench"
 
 ALL_BACKBONES = [
     "mars_orbital_vit",
@@ -56,6 +59,29 @@ ALL_BACKBONES = [
     "satmae_pp",
     "croma",
 ]
+
+V2_EXTRA_BACKBONES = [
+    "hirise_ctx_themis",
+]
+
+V2_ALL_BACKBONES = ALL_BACKBONES + V2_EXTRA_BACKBONES
+
+
+def fair_manifest_path(version: str = "v1") -> Path:
+    name = "fair_manifest_v2.json" if version == "v2" else "fair_manifest.json"
+    return PROJECT_ROOT / "results" / "ablations" / name
+
+
+def fair_csv_stem(version: str = "v1") -> str:
+    return "saebench_fair_v2" if version == "v2" else "saebench_fair"
+
+
+def resolve_backbones(args: argparse.Namespace) -> list[str]:
+    if args.backbone:
+        return args.backbone
+    if getattr(args, "fair_version", "v1") == "v2":
+        return list(V2_ALL_BACKBONES)
+    return list(ALL_BACKBONES)
 
 GRID = {
     "layer_depth": ["middle", "late"],
@@ -106,7 +132,7 @@ def run_cmd(cmd: list[str], desc: str) -> None:
 
 
 def iter_runs(args: argparse.Namespace):
-    backbones = args.backbone or ALL_BACKBONES
+    backbones = resolve_backbones(args)
     if args.protocol == "winner":
         layers = args.layer or GRID["layer_depth"]
         auxs = [1.0]
@@ -137,10 +163,15 @@ def train_ablations(args: argparse.Namespace) -> list[dict]:
             break
         tag = ablation_tag(layer, arch, mult, mode, aux)
         sub = results_subdir(bb, tag)
+        cache_dir = args.post2025_cache_dir or POST2025_CACHE
         cmd = [
             py,
             str(PROJECT_ROOT / "run_experiments.py"),
             "--force",
+            "--dataset",
+            "post2025_hirise",
+            "--post2025-cache-dir",
+            str(cache_dir),
             "--backbone",
             bb,
             "--layer",
@@ -155,10 +186,6 @@ def train_ablations(args: argparse.Namespace) -> list[dict]:
             str(mult),
             "--aux-loss-weight",
             str(aux),
-            "--hirise_images_dir",
-            str(args.hirise_images),
-            "--hirise_labels_file",
-            str(args.hirise_labels),
         ]
         if args.smoke:
             cmd.append("--smoke")
@@ -177,7 +204,7 @@ def train_ablations(args: argparse.Namespace) -> list[dict]:
             }
         )
 
-    manifest = PROJECT_ROOT / "results" / "ablations" / "fair_manifest.json"
+    manifest = fair_manifest_path(getattr(args, "fair_version", "v1"))
     manifest.parent.mkdir(parents=True, exist_ok=True)
     existing: list[dict] = []
     if manifest.is_file() and not args.overwrite_manifest:
@@ -192,7 +219,7 @@ def train_ablations(args: argparse.Namespace) -> list[dict]:
 
 def probe_ablations(args: argparse.Namespace, records: list[dict] | None = None) -> None:
     py = str(args.python)
-    manifest_path = PROJECT_ROOT / "results" / "ablations" / "fair_manifest.json"
+    manifest_path = fair_manifest_path(getattr(args, "fair_version", "v1"))
     if records is None:
         if not manifest_path.is_file():
             raise FileNotFoundError(f"No manifest at {manifest_path}; run with --train first")
@@ -212,7 +239,7 @@ def probe_ablations(args: argparse.Namespace, records: list[dict] | None = None)
             "--extract",
             "--probe-landforms-only",
             "--probe-supplementary",
-            "--no-cache-activations",
+            "--cache-activations",
             "--results-dir",
             str(results_root),
             "--data-dir",
@@ -224,6 +251,13 @@ def probe_ablations(args: argparse.Namespace, records: list[dict] | None = None)
             "--sae-arch",
             rec["sae_arch"],
         ]
+        cmd.append("--probe-official-test")
+        if args.marsbench_root:
+            cmd.extend(["--marsbench-root", str(args.marsbench_root)])
+        if args.post2025_cache_dir:
+            cmd.extend(["--post2025-cache-dir", str(args.post2025_cache_dir)])
+        if args.smoke:
+            cmd.append("--smoke")
         run_cmd(cmd, f"SAEBench {bb}/{rec['tag']}")
         csv_path = results_root / "saebench_scores.csv"
         if not csv_path.is_file():
@@ -251,6 +285,8 @@ def probe_ablations(args: argparse.Namespace, records: list[dict] | None = None)
                 df[k] = rec["tag"]
             elif k in rec:
                 df[k] = rec[k]
+        df["sae_train_dataset"] = SAE_TRAIN_DATASET
+        df["eval_dataset"] = EVAL_DATASET
         rows.append(df)
 
     if not rows:
@@ -258,7 +294,7 @@ def probe_ablations(args: argparse.Namespace, records: list[dict] | None = None)
         return
 
     out = pd.concat(rows, ignore_index=True)
-    out_path = PROJECT_ROOT / "results" / "ablations" / "saebench_fair.csv"
+    out_path = PROJECT_ROOT / "results" / "ablations" / f"{fair_csv_stem(getattr(args, 'fair_version', 'v1'))}.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.is_file() and records:
         existing = pd.read_csv(out_path)
@@ -303,7 +339,7 @@ def probe_ablations(args: argparse.Namespace, records: list[dict] | None = None)
             flush=True,
         )
 
-    rebuild_fair_tables(max_dead=args.max_dead)
+    rebuild_fair_tables(max_dead=args.max_dead, fair_version=getattr(args, "fair_version", "v1"))
 
 
 def _fair_metric_columns(df: pd.DataFrame) -> list[str]:
@@ -353,7 +389,11 @@ def pick_best_per_group(
         preferred = g[g["dead_ok"] & g["core_ev_ok"]]
         if preferred.empty:
             preferred = g
-        picked.append(preferred.loc[preferred[f1].idxmax()])
+        valid_f1 = preferred[f1].dropna()
+        if valid_f1.empty:
+            picked.append(preferred.iloc[0])
+        else:
+            picked.append(preferred.loc[valid_f1.idxmax()])
 
     out = pd.DataFrame(picked)
     base_cols = [
@@ -409,7 +449,11 @@ def pick_best_per_backbone(
         preferred = g[g.get("dead_ok", True) & g.get("core_ev_ok", True)]
         if preferred.empty:
             preferred = g
-        picked.append(preferred.loc[preferred[f1].idxmax()])
+        valid_f1 = preferred[f1].dropna()
+        if valid_f1.empty:
+            picked.append(preferred.iloc[0])
+        else:
+            picked.append(preferred.loc[valid_f1.idxmax()])
     out = pd.DataFrame(picked)
     return out.sort_values("backbone")
 
@@ -434,14 +478,25 @@ def main() -> None:
     parser.add_argument("--overwrite-manifest", action="store_true")
     parser.add_argument("--max-dead", type=float, default=0.40, help="Best-pick dead_fraction cap")
     parser.add_argument("--python", type=Path, default=PYTHON)
-    parser.add_argument("--hirise-images", type=Path, default=HIRISE_IMAGES)
-    parser.add_argument("--hirise-labels", type=Path, default=HIRISE_LABELS)
+    parser.add_argument("--post2025-cache-dir", type=Path, default=POST2025_CACHE)
+    parser.add_argument("--marsbench-root", type=Path, default=None)
     parser.add_argument("--backbone", action="append", default=None)
     parser.add_argument("--layer", action="append", default=None)
     parser.add_argument("--sae-arch", action="append", dest="sae_arch", default=None)
     parser.add_argument("--dict-multiplier", action="append", type=int, default=None)
     parser.add_argument("--preprocess-mode", action="append", default=None)
     parser.add_argument("--aux-loss-weight", action="append", type=float, default=None)
+    parser.add_argument(
+        "--fair-version",
+        choices=("v1", "v2"),
+        default="v1",
+        help="v1=original 5 backbones + saebench_fair*.csv; v2=adds hirise_ctx_themis + *_v2.csv",
+    )
+    parser.add_argument(
+        "--plot-histograms",
+        action="store_true",
+        help="After probe, generate figures/metric_histograms/ from fair v2 CSVs",
+    )
     args = parser.parse_args()
 
     if not args.train and not args.probe and not args.rebuild_tables:
@@ -452,8 +507,29 @@ def main() -> None:
         records = train_ablations(args)
     if args.probe:
         probe_ablations(args, records)
+        if args.plot_histograms or args.fair_version == "v2":
+            _generate_fair_histograms(args.fair_version)
     if args.rebuild_tables:
-        rebuild_fair_tables(max_dead=args.max_dead)
+        rebuild_fair_tables(max_dead=args.max_dead, fair_version=args.fair_version)
+        if args.plot_histograms or args.fair_version == "v2":
+            _generate_fair_histograms(args.fair_version)
+
+
+def _generate_fair_histograms(fair_version: str) -> None:
+    from src.eval.metric_histograms import generate_metric_histograms
+
+    stem = fair_csv_stem(fair_version)
+    ablations = PROJECT_ROOT / "results" / "ablations"
+    counts = generate_metric_histograms(
+        ablations / f"{stem}.csv",
+        PROJECT_ROOT / "figures" / "metric_histograms",
+        paper_csv=ablations / f"{stem}_paper.csv",
+    )
+    print(
+        f"Histograms: {counts['per_metric']} per-metric, "
+        f"{counts['per_backbone']} per-backbone -> figures/metric_histograms/",
+        flush=True,
+    )
 
 
 def load_saebench_row(results_subdir: str) -> dict | None:
@@ -501,8 +577,9 @@ def apply_score_overrides(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def rebuild_fair_tables(max_dead: float = 0.40) -> None:
-    fair_path = PROJECT_ROOT / "results" / "ablations" / "saebench_fair.csv"
+def rebuild_fair_tables(max_dead: float = 0.40, fair_version: str = "v1") -> None:
+    stem = fair_csv_stem(fair_version)
+    fair_path = PROJECT_ROOT / "results" / "ablations" / f"{stem}.csv"
     if not fair_path.is_file():
         raise FileNotFoundError(f"Missing {fair_path}; run winner protocol probe first.")
     df = pd.read_csv(fair_path)
@@ -511,12 +588,12 @@ def rebuild_fair_tables(max_dead: float = 0.40) -> None:
     print(f"Updated {fair_path} ({len(df)} rows)", flush=True)
 
     all_groups = pick_best_per_group(df, max_dead=max_dead, require_all_groups=True)
-    all_path = PROJECT_ROOT / "results" / "ablations" / "saebench_fair_all.csv"
+    all_path = PROJECT_ROOT / "results" / "ablations" / f"{stem}_all.csv"
     all_groups.to_csv(all_path, index=False)
     print(f"All groups ({len(all_groups)} rows): {all_path}", flush=True)
 
     paper = pick_best_per_backbone(all_groups, max_dead=max_dead)
-    paper_path = PROJECT_ROOT / "results" / "ablations" / "saebench_fair_paper.csv"
+    paper_path = PROJECT_ROOT / "results" / "ablations" / f"{stem}_paper.csv"
     paper.to_csv(paper_path, index=False)
     print(f"Paper picks ({len(paper)} backbones): {paper_path}", flush=True)
     if not paper.empty:
@@ -547,7 +624,7 @@ def rebuild_fair_tables(max_dead: float = 0.40) -> None:
         print(paper[show].to_string(index=False), flush=True)
 
     # Back-compat name for the complete per-group table
-    best_path = PROJECT_ROOT / "results" / "ablations" / "saebench_fair_best.csv"
+    best_path = PROJECT_ROOT / "results" / "ablations" / f"{stem}_best.csv"
     all_groups.to_csv(best_path, index=False)
     print(f"Also wrote {best_path}", flush=True)
 

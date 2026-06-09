@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from pathlib import Path
 from typing import Any, Dict, List, TYPE_CHECKING
 
@@ -39,6 +41,14 @@ def _import_adapter(loader: str):
         from src.backbones.satmae_pp import SatMAEppAdapter
 
         return SatMAEppAdapter
+    if loader == "hirise_ctx_themis":
+        from src.backbones.hirise_ctx_themis import HiriseCtxThemisAdapter
+
+        return HiriseCtxThemisAdapter
+    if loader == "anysat":
+        from src.backbones.anysat import AnySatAdapter
+
+        return AnySatAdapter
     raise ValueError(f"Unsupported loader {loader!r}")
 
 
@@ -72,6 +82,18 @@ def resolve_checkpoint(name: str, cfg: Dict[str, Any]) -> str | None:
         return DEFAULT_PATHS["mars_orbital_vit_checkpoint"]
     if name == "momo" and DEFAULT_PATHS.get("momo_checkpoint"):
         return DEFAULT_PATHS["momo_checkpoint"]
+    if name == "hirise_ctx_themis":
+        env_ckpt = os.environ.get("HIRISE_CTX_THEMIS_CHECKPOINT_PATH", "")
+        if env_ckpt and Path(env_ckpt).is_file():
+            return env_ckpt
+        for candidate in (
+            Path(DEFAULT_PATHS["hirise_ctx_themis_checkpoint"]),
+            Path(DEFAULT_PATHS["drive_root"]) / "existing_model_checkpoints" / "hirise_ctx_themis.pth",
+            Path(DEFAULT_PATHS["backbone_checkpoints_dir"]) / "hirise_ctx_themis.pth",
+        ):
+            if candidate.is_file():
+                return str(candidate)
+        return DEFAULT_PATHS["hirise_ctx_themis_checkpoint"]
     return None
 
 
@@ -142,6 +164,22 @@ def create_backbone(
                 "checkpoint_filename", "checkpoint_ViT-L_pretrain_fmow_rgb.pth"
             ),
             checkpoint_path=checkpoint,
+        )
+    elif loader == "hirise_ctx_themis":
+        adapter = AdapterCls(
+            spec=spec,
+            timm_model=cfg.get("timm_model", "vit_base_patch16_224"),
+            device=device,
+            checkpoint_path=checkpoint,
+            hf_repo=cfg.get("model_id") or "Mirali33/MOMO",
+            hf_filename=cfg.get("checkpoint_filename", "vit-b-16/hirise_ctx_themis.pth"),
+        )
+    elif loader == "anysat":
+        adapter = AdapterCls(
+            spec=spec,
+            device=device,
+            checkpoint_path=checkpoint,
+            stub_seed=int(cfg.get("stub_seed", 42)),
         )
     else:
         raise ValueError(f"Unsupported loader {loader!r} for backbone {name!r}")

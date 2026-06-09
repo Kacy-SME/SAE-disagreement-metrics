@@ -38,3 +38,6 @@ results/**/spatial_heatmaps/
 results/hirise_readable_cache.json
 results/skipped_hirise_images.json
 results/**/run.log
+
+# Generated figures (regenerate from CSVs)
+figures/

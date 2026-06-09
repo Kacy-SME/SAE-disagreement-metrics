@@ -9,7 +9,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON = Path(r"c:\Users\kacy\Desktop\Orbital_ViT\.venv\Scripts\python.exe")
-FAIR_CSV = PROJECT_ROOT / "results" / "ablations" / "saebench_fair.csv"
+
+
+def fair_csv_path(version: str) -> Path:
+    stem = "saebench_fair_v2" if version == "v2" else "saebench_fair"
+    return PROJECT_ROOT / "results" / "ablations" / f"{stem}.csv"
 
 
 def main() -> None:
@@ -25,6 +29,12 @@ def main() -> None:
     parser.add_argument("--layer-depth", action="append", default=None)
     parser.add_argument("--sae-arch", action="append", default=None)
     parser.add_argument(
+        "--fair-version",
+        choices=("v1", "v2"),
+        default="v1",
+        help="Merge into saebench_fair.csv (v1) or saebench_fair_v2.csv (v2)",
+    )
+    parser.add_argument(
         "--cache-activations",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -37,6 +47,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    fair_csv = fair_csv_path(args.fair_version)
     cache_flag = "--cache-activations" if args.cache_activations else "--no-cache-activations"
     cmd = [
         str(PYTHON),
@@ -52,7 +63,9 @@ def main() -> None:
         "--data-dir",
         str(PROJECT_ROOT / "results"),
         "--merge-fair-csv",
-        str(FAIR_CSV),
+        str(fair_csv),
+        "--dataset",
+        "hirise_v3_2",
     ]
     if args.skip_existing:
         cmd.append("--skip-existing")
