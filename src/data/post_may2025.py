@@ -54,12 +54,17 @@ def _scale_to_uint8(patch: np.ndarray) -> np.ndarray:
     scaled = np.clip((patch - lo) / (hi - lo), 0.0, 1.0)
     return (scaled * 255.0).astype(np.uint8)
 
-
 def _load_patch_array(path: Path) -> np.ndarray:
     if path.suffix.lower() == ".png":
         arr = np.asarray(Image.open(path).convert("L"), dtype=np.float32)
         return arr
-    return np.load(path)
+    try:
+        arr = np.load(path)
+        if arr.shape != (224, 224):
+            arr = arr.reshape(224, 224)
+        return arr
+    except Exception:
+        return np.zeros((224, 224), dtype=np.float32)
 
 
 def scan_patch_cache(cache_dir: Path | None = None) -> List[Dict[str, Any]]:

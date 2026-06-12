@@ -84,7 +84,7 @@ def resolve_backbones(args: argparse.Namespace) -> list[str]:
     return list(ALL_BACKBONES)
 
 GRID = {
-    "layer_depth": ["middle", "late"],
+    "layer_depth": ["early", "middle", "late"],
     "sae_arch": ["topk", "matryoshka"],
     "dictionary_multiplier": [1, 2, 4],
     "preprocess_mode": ["per_dim"],
