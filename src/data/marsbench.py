@@ -92,6 +92,30 @@ MARS_BENCH_EVAL_SPLITS: Tuple[MarsBenchSplitSpec, ...] = (
 )
 
 
+def filter_marsbench_specs(
+    spec_keys: Sequence[str] | None,
+    specs: Sequence[MarsBenchSplitSpec] = MARS_BENCH_EVAL_SPLITS,
+) -> Tuple[MarsBenchSplitSpec, ...]:
+    """Restrict MARS_BENCH_EVAL_SPLITS to specific dataset keys (e.g. ["DoMars16k"]).
+
+    spec_keys is matched case-insensitively against MarsBenchSplitSpec.key.
+    None or empty -> returns all specs unchanged (back-compat default).
+    Raises ValueError on unknown keys so typos fail loudly instead of silently
+    producing an empty/partial pool.
+    """
+    if not spec_keys:
+        return tuple(specs)
+    wanted = {k.strip().lower() for k in spec_keys}
+    known = {s.key.lower(): s for s in specs}
+    unknown = wanted - known.keys()
+    if unknown:
+        valid = ", ".join(s.key for s in specs)
+        raise ValueError(
+            f"Unknown Mars-Bench spec key(s): {sorted(unknown)}. Valid keys: {valid}"
+        )
+    return tuple(s for s in specs if s.key.lower() in wanted)
+
+
 def default_marsbench_root() -> Path:
     env = os.environ.get("MARS_BENCH_ROOT", "")
     if env:
@@ -233,7 +257,9 @@ def load_marsbench_pool(
     splits: Sequence[str] = ("train", "val", "test"),
     root: Path | None = None,
     specs: Sequence[MarsBenchSplitSpec] = MARS_BENCH_EVAL_SPLITS,
+    spec_keys: Sequence[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    specs = filter_marsbench_specs(spec_keys, specs)
     root = root or default_marsbench_root()
     pool: List[Dict[str, Any]] = []
     loaded_splits: List[str] = []
@@ -341,9 +367,14 @@ def build_marsbench_probe_splits(
     max_train_samples: int | None = None,
     max_eval_samples: int | None = None,
     seed: int = 42,
+    spec_keys: Sequence[str] | None = None,
 ) -> Tuple[MarsBenchProbeDataset, MarsBenchProbeDataset, Dict[str, Any]]:
-    train_pool, train_summary = load_marsbench_pool(splits=train_splits, root=root)
-    eval_pool, eval_summary = load_marsbench_pool(splits=eval_splits, root=root)
+    train_pool, train_summary = load_marsbench_pool(
+        splits=train_splits, root=root, spec_keys=spec_keys
+    )
+    eval_pool, eval_summary = load_marsbench_pool(
+        splits=eval_splits, root=root, spec_keys=spec_keys
+    )
     train_pool = _subsample_pool(train_pool, max_train_samples, seed=seed)
     eval_pool = _subsample_pool(eval_pool, max_eval_samples, seed=seed + 1)
     if not train_pool:

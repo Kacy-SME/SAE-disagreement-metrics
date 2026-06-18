@@ -228,6 +228,7 @@ def extract_marsbench_eval_activations(
     cache_acts: bool,
     marsbench_root: Path | None = None,
     max_eval_samples: int | None = None,
+    marsbench_specs: list[str] | None = None,
 ) -> tuple[torch.Tensor, list[str], int]:
     meta = parse_run_path(run_dir, results_root)
     cache_path = run_dir / "marsbench_eval_activations.pt"
@@ -255,6 +256,7 @@ def extract_marsbench_eval_activations(
         root=marsbench_root or default_marsbench_root(),
         eval_splits=("test",),
         max_eval_samples=max_eval_samples,
+        spec_keys=marsbench_specs,
     )
     n_eval = min(int(exp_cfg["data"]["eval_images"]), len(eval_ds))
     eval_subset = torch.utils.data.Subset(eval_ds, list(range(n_eval)))
@@ -482,6 +484,7 @@ def extract_marsbench_probe_activations(
     marsbench_root: Path | None = None,
     max_train_samples: int | None = None,
     max_eval_samples: int | None = None,
+    marsbench_specs: list[str] | None = None,
 ) -> tuple[torch.Tensor, list[str], int, torch.Tensor, list[str], int, dict]:
     """ViT forward on pooled Mars-Bench splits for sparse probing / interpretability."""
     meta = parse_run_path(run_dir, results_root)
@@ -515,6 +518,7 @@ def extract_marsbench_probe_activations(
         eval_splits=tuple(eval_splits),
         max_train_samples=max_train_samples,
         max_eval_samples=max_eval_samples,
+        spec_keys=marsbench_specs,
     )
     batch_size = int(exp_cfg["data"]["activation_batch_size"])
     num_workers = int(exp_cfg["data"].get("dataloader_workers", 0))
@@ -590,6 +594,7 @@ def run_marsbench_sparse_probe(
     marsbench_root: Path | None = None,
     max_train_samples: int | None = None,
     max_eval_samples: int | None = None,
+    marsbench_specs: list[str] | None = None,
 ) -> dict:
     (
         train_acts,
@@ -613,6 +618,7 @@ def run_marsbench_sparse_probe(
         marsbench_root=marsbench_root,
         max_train_samples=max_train_samples,
         max_eval_samples=max_eval_samples,
+        marsbench_specs=marsbench_specs,
     )
     split_label = "marsbench_test" if eval_splits == ["test"] else "marsbench_val_test"
     return compute_hirise_sparse_probing(
@@ -643,6 +649,7 @@ def run_interpretability_for_run(
     probe_train_splits: list[str],
     data_dir: Path,
     marsbench_root: Path | None = None,
+    marsbench_specs: list[str] | None = None,
 ) -> dict:
     weights = run_dir / "sae_weights.pt"
     if not weights.is_file():
@@ -669,6 +676,7 @@ def run_interpretability_for_run(
         eval_splits=["test"],
         data_dir=data_dir,
         marsbench_root=marsbench_root,
+        marsbench_specs=marsbench_specs,
     )
     out = compute_interpretability_metrics(
         sae,
@@ -787,6 +795,7 @@ def process_run(
     post2025_cache_dir: Path | None = None,
     marsbench_max_train: int | None = None,
     marsbench_max_eval: int | None = None,
+    marsbench_specs: list[str] | None = None,
 ) -> dict:
     meta = parse_run_path(run_dir, results_root)
     row = {**meta, **dataset_tag_columns(), "saebench_status": "proxy_only"}
@@ -808,6 +817,7 @@ def process_run(
                 probe_train_splits or ["train", "val"],
                 _data_dir,
                 marsbench_root=marsbench_root,
+                marsbench_specs=marsbench_specs,
             )
         )
         row["saebench_status"] = "interpretability:" + "+".join(sorted(metrics))
@@ -833,6 +843,7 @@ def process_run(
         cache_acts=cache_acts,
         marsbench_root=marsbench_root,
         max_eval_samples=marsbench_max_eval,
+        marsbench_specs=marsbench_specs,
     )
     core = compute_core_metrics(
         sae, acts, norm_spec=norm_spec, batch_size=core_batch_size
@@ -869,6 +880,7 @@ def process_run(
             marsbench_root=marsbench_root,
             max_train_samples=marsbench_max_train,
             max_eval_samples=marsbench_max_eval,
+            marsbench_specs=marsbench_specs,
         )
         row.update(sparse)
         status = "core+sparse+obs_div+marsbench_test"
@@ -889,6 +901,7 @@ def process_run(
                 marsbench_root=marsbench_root,
                 max_train_samples=marsbench_max_train,
                 max_eval_samples=marsbench_max_eval,
+                marsbench_specs=marsbench_specs,
             )
             row.update(prefix_probe_metrics(supp, "supp"))
             status += "+supp_val_test"
@@ -919,6 +932,7 @@ def process_run(
                 probe_train_splits or ["train", "val"],
                 _data_dir,
                 marsbench_root=marsbench_root,
+                marsbench_specs=marsbench_specs,
             )
         )
         row["saebench_status"] += "+interp:" + "+".join(sorted(metrics))
@@ -958,6 +972,16 @@ def main() -> None:
         type=Path,
         default=None,
         help="Mars-Bench data root (default: MARS_BENCH_ROOT or Drive/Mars-Bench)",
+    )
+    parser.add_argument(
+        "--marsbench-specs",
+        default=None,
+        help=(
+            "Comma-separated Mars-Bench dataset keys to restrict evaluation to "
+            "(e.g. 'DoMars16k'). Default: all 9 specs (legacy 38-class union "
+            "behavior). Valid keys: AtmosDust, DoMars16k, Frost, Landmark, "
+            "Boulder, ConeQuest, CraterBinary, CraterMulti, MMLS."
+        ),
     )
     parser.add_argument(
         "--post2025-cache-dir",
@@ -1044,6 +1068,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    marsbench_specs = (
+        [s.strip() for s in args.marsbench_specs.split(",") if s.strip()]
+        if args.marsbench_specs
+        else None
+    )
+
     if args.probe_landforms_only and not args.probe_adhoc_eval:
         args.probe_official_test = True
 
@@ -1128,6 +1158,7 @@ def main() -> None:
                 post2025_cache_dir=args.post2025_cache_dir,
                 marsbench_max_train=marsbench_max_train,
                 marsbench_max_eval=marsbench_max_eval,
+                marsbench_specs=marsbench_specs,
             )
             supp_n = row.get("sparse_probe_supp_num_images")
             supp_f1 = row.get("sparse_probe_supp_f1_sae_latents")
