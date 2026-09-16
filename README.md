@@ -14,12 +14,17 @@ available under [`results/`](./results).
 
 ### Key results
 
-- **Full grid results (36 configurations):** [`results/summary_table.csv`](./results/summary_table.csv)
-  — SAE quality (explained variance, cosine similarity, ΔF1) and domain-relevance
-  metrics (monosemanticity, probe-decoder alignment, TCAV score/significance)
-  for all 6 backbones × 3 layer depths × 2 SAE architectures.
-- **Effective dimensionality ($k_{95}$) by backbone and layer:** [`results/k95_by_backbone_layer.csv`](./results/k95_by_backbone_layer.csv)
-- **Feature absorption / crater-class directional agreement:** [`results/absorption_crater.csv`](./results/absorption_crater.csv)
-- **Dead-latent counts, all 36 configurations:** included in `summary_table.csv` (`n_alive` column)
+**Monosemanticity vs. TCAV score, anti-correlated across the 36-configuration grid:**
 
+![Monosemanticity vs TCAV](./results/figures/figure1_mono_tcav_scatter.jpg)
+
+**The crater case: the pipeline-selected latent does not resemble craters:**
+
+![Crater case](./results/figures/figure2_crater_case.jpg)
+
+**Effective dimensionality ($k_{95}$) by backbone and layer depth:**
+
+![k95 by layer](./results/figures/figure3_k95_by_layer.jpg)
+
+Full per-configuration CSV results (all 36 grid cells): [`results/summary_table.csv`](./results/summary_table.csv)
 ### Reproducing the paper's numbers
