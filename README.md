@@ -27,4 +27,4 @@ available under [`results/`](./results).
 ![k95 by layer](./results/figures/figure3_k95_by_layer.jpg)
 
 Full per-configuration CSV results (all 36 grid cells): [`results/summary_table.csv`](./results/summary_table.csv)
-### Reproducing the paper's numbers
+
