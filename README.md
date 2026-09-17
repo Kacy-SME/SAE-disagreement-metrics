@@ -95,6 +95,14 @@ SAE architectures: `topk` (k=40, dict=4×d), `matryoshka` (nested d, 2d, 4d; k=4
 
 **Total runs:** 6 × 3 × 2 = **36** combinations.
 
+### Methodological details
+
+**TCAV configuration.** TCAV is computed once per SAE configuration across the full 6 × 3 × 2 grid, yielding one score per DoMars16k class per configuration. For each configuration, the concept direction is fit on the SAE latents at the layer depth (early, middle, or late) at which that SAE was trained, using the same training split as the SAE itself. The directional derivative is measured through a logistic regression probe trained on those latents; raw backbone activations are not used at this stage. This means TCAV reflects whether a concept direction is causally usable in the representation the SAE has preserved, not in the backbone's full activation space.
+
+All reported TCAV *p*-values use n = 25 random-concept draws. The Monte Carlo resolution is therefore coarse (observed *p* ∈ {0, 0.04, 0.08, ...}), and *p* = 0.00 means the observed score exceeded all 25 null draws, not a continuously calibrated tail probability. This setting is retained for consistency with the full-grid computation. Finer nulls (e.g. 100–500 draws) would refine borderline cases such as the middle-layer Matryoshka crater score at *p* = 0.08, but would not change the qualitative crater-case finding, where visual incoherence and wrong-sign contribution already dissociate from the directional result.
+
+**SAE training hyperparameters.** Every backbone-layer-architecture cell trains a TopK SAE (*k* = 40 active latents per input, auxiliary dead-latent *k* = d_in/2) for 50,000 AdamW steps (batch size 1024, learning rate 3×10⁻⁴, auxiliary loss weight 1.0) on centered, per-dimension-standardized activations. TopK dictionaries use size dict_size = d_in (expansion factor 1). Matryoshka dictionaries use nested sizes [d_in, 2·d_in]. Backbone width d_in is 768 for MOMO, HCT, Mars Orbital ViT, and CROMA, and 1024 for DINOv3-sat493m and SatMAE++. These settings match the reported ablation grid (path tags `*_d1_*` / `*_d2_*`).
+
 ## Data paths (no separate test folder)
 
 You only need **one** HiRISE location:
