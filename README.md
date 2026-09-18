@@ -1,4 +1,4 @@
-# SAE Experiments on Mars Orbital ViT Backbones
+# SAE Experiments on Mars & Earth Orbital Vision Models
 
 ![SAE decomposition of orbital image activations into sparse feature latents](./results/figures/sae_diagram.png)
 
